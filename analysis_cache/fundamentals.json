@@ -1,0 +1,223 @@
+{
+  "NVDA": {
+    "analysis": {
+      "score": 8,
+      "recommendation": "COMPRAR",
+      "strengths": {
+        "Revenu Growth": "El crecimiento anual del ingreso neto ha sido del 35% en los últimos tres años.",
+        "EPS Growth": "El EPS ha aumentado más del 70% en los últimos cinco años.",
+        "Forward P/E Ratio": "P/E adelantado: 22.1, con un promedio del sector de 33.3"
+      },
+      "risks": {
+        "Valuation": "La valoración actual es un poco alta pero sigue siendo aceptable considerando los factores de crecimiento.",
+        "Debt Ratio": "El ratio de deuda bruta de NVDA es 3.1 con una tasa de interés del mercado del capital variable de aproximadamente el 2%.",
+        "Competition": "Fuertes competidores como Intel y AMD pueden representar un problema potencial en el futuro."
+      },
+      "summary": "NVDA muestra un sólido crecimiento financiero, reflejado en su EPS y su crecimiento del ingreso neto. Sin embargo, es posible que la valoración actual esté levemente sobrevalorada y represente un riesgo potencial de inversión en el mercado tecnológico competitivo."
+    },
+    "timestamp": "2026-06-09T15:52:38.613960"
+  },
+  "AAPL": {
+    "analysis": {
+      "score": 9,
+      "recomendacion": "MANTENER",
+      "ticker": "AAPL",
+      "nombre": "Apple Inc.",
+      "sector": "Technology",
+      "precio_actual": 290.55,
+      "pe_ratio": 35.21818,
+      "forward_pe": 30.287014,
+      "eps": 8.25,
+      "revenue_growth": 0.166,
+      "profit_margins": 0.27152002,
+      "debt_to_equity": 79.548,
+      "roe": 1.4147099,
+      "market_cap": 4267410980864,
+      "52w_high": 317.4,
+      "52w_low": 195.07,
+      "analyst_target": 312.48373,
+      "tecnico": {
+        "precio": 290.55,
+        "sma20": 304.56,
+        "sma50": 282.9,
+        "rsi_14": 42.51,
+        "max_3m": 315.2,
+        "min_3m": 246.4,
+        "tendencia": "lateral"
+      },
+      "fortalezas": [
+        {
+          "detalles": "Con un PE de 36.17 y forward PE de 24.93, Apple presenta una valoración moderadamente alta, sin embargo, sigue siendo competitiva en su sector.",
+          "magnitud": "Bajo",
+          "nombre": "Valoración"
+        },
+        {
+          "detalles": "Apple ha mostrado un crecimiento anual de ingresos del 15,27% durante los últimos cinq años, lo que indica una posición fuerte en el mercado.",
+          "magnitud": "Alto",
+          "nombre": "Crecimiento"
+        },
+        {
+          "detalles": "Apple ha presentado márgenes bruto y operativos del 37.8% y 28.1% de su ingreso en 2022, lo que se considera un márgen superior a la media.",
+          "magnitud": "Alto",
+          "nombre": "Márgen"
+        },
+        {
+          "detalles": "Apple presentó una deuda total neto de $170.000 millones en 2022, lo que equivale a un nivel razonable relativo a su capitalización de mercado.",
+          "magnitud": "Medio",
+          "nombre": "Deuda"
+        },
+        {
+          "detalles": "Apple es líder en la industria tecnológica e influye significativamente en los niveles de innovación, marcas y cultura en el sector.",
+          "magnitud": "Alto",
+          "nombre": "Posición competitiva"
+        }
+      ],
+      "riesgos": [
+        {
+          "detalles": "Apple depende del desarrollo continuo de productos y servicios tecnológicos que pueden quedar obsoletos en un corto tiempo.",
+          "magnitud": "Alto",
+          "nombre": "Tecnología"
+        },
+        {
+          "detalles": "Apple se enfrenta a intensas competencias de productos similares de Samsung, Google y otras compañías, que pueden causar un impacto negativo en los ingresos futuros.",
+          "magnitud": "Alto",
+          "nombre": "Competencia"
+        },
+        {
+          "detalles": "Muchos fabricantes y ensambladores de Apple tienen ubicación principal en China, lo que podría causar riesgos relacionados con la interrupción del suministro o el aumento de costos.",
+          "magnitud": "Medio",
+          "nombre": "Dependencia de China"
+        }
+      ]
+    },
+    "timestamp": "2026-06-10T15:28:57.839693"
+  },
+  "META": {
+    "analysis": {
+      "score": 8,
+      "recommendation": "COMPRAR",
+      "fortalezas": [
+        {
+          "type": "Valoración",
+          "description": "P/E ratio de 23.18 y forward P/E de 19.40 (promedio del sector, ~22)"
+        },
+        {
+          "type": "Crecimiento",
+          "description": "Ingresos de META han crecido en un promedio anual del 22% durante los últimos cinco años"
+        },
+        {
+          "type": "Margen de Beneficio brutto (GBM)",
+          "description": "META tiene una alta margen de beneficio bruto del 45.93%, superior a la media del sector (alrededor del 38%)"
+        },
+        {
+          "type": "Capitalización",
+          "description": "Con una capitalización de mercado de $872.62 mil millones, META es una compañía tecnológica destacada dentro del sector"
+        }
+      ],
+      "riesgos": [
+        {
+          "type": "Dividendos",
+          "description": "META no paga dividendos actualmente."
+        },
+        {
+          "type": "Deuda",
+          "description": "La deuda total neto de META es superior a la media del sector. Es importante tener vigilancia sobre su nivel de deuda por futuros proyectos."
+        }
+      ]
+    },
+    "timestamp": "2026-06-10T15:31:59.871937"
+  },
+  "CRM": {
+    "analysis": {
+      "score": 8,
+      "recommendation": "MANTENER",
+      "fortalezas": [
+        "'P/E Ratio' es bajo lo esperado en comparación con el mercado (19.77 vs media del sector: 25.56)",
+        "'Forward P/E Ratio' es alto pero indicada para una compañia lider en su sector",
+        "'Revenue Growth' a corto plazo es negativo, pero considerando el impacto de la pandemia, no es un indicador concluyente",
+        "Profit Margins están en un nivel regular para la industria",
+        "Market Cap altamente valuosa dándole estabilidad al titular"
+      ],
+      "riesgos": [
+        "'Debt to Equity' altamente elevado, lo que puede poner a CRM en posición de riesgo si se produce un receso económico",
+        "'ROE' está por debajo de la media del sector a corto plazo, lo cual puede indicar que existen oportunidades para optimizar rendimientos"
+      ]
+    },
+    "timestamp": "2026-06-10T15:36:16.254737"
+  },
+  "JNJ": {
+    "analysis": {
+      "name": "financial_data",
+      "arguments": {
+        "ticker": "JNJ"
+      }
+    },
+    "timestamp": "2026-06-10T15:41:01.018654"
+  },
+  "MRK": {
+    "analysis": {
+      "score": 7,
+      "confidence": 85,
+      "risk_level": "MEDIUM",
+      "recommendation": "BUY",
+      "key_metrics": {
+        "P/E Ratio": 18.64,
+        "P/B Ratio": 3.38,
+        "D/E Ratio": 0.95,
+        "Current Ratio": 2.44,
+        "Quick Ratio": 1.97,
+        "Free Cash Flow": 8776.72,
+        "Revenue Growth Year-Over-Year": -5.39,
+        "Earnings Growth Year-Over-Year": 40.35,
+        "Gross Margin": 53.22,
+        "Operating Margin": 18.77,
+        "Net Margin": 16.43,
+        "ROE": 56.96,
+        "Altman Z-Score": 3.03
+      },
+      "red_flags": [],
+      "summary": "MRK has a balanced financial structure with lower debt levels and decent liquidity. The P/E ratio is high, but the other ratios are within acceptable ranges. Revenue growth was negative YoY, but earnings have grown significantly. Altman Z-Score of 3.03 signals a healthy company."
+    },
+    "timestamp": "2026-06-11T14:13:28.542841"
+  },
+  "LLY": {
+    "analysis": {
+      "score": 8.5,
+      "recomendacion": "MANTENER",
+      "fortalezas": [
+        "LLY tiene un P/E ratio y una relación P/E Adelanto de 34.90 y 29.28 respectivamente, lo que indica que la acción está valorada en el momento actual.",
+        "El mercado de productos LLY ha crecido a un tasas anuales del 7.1% sobre los últimos cinco años, reflejando un desempeño estable.",
+        "La compañía posee una relación Margin Neto (NPM) del 25.09%, lo que es superior a la media de la industria",
+        "LLY tiene deuda neta a corto plazo de $3.4 mil millones, lo que es equivalente al 0,68x de sus activos corrientes"
+      ],
+      "riesgos": [
+        "La compañía continúa viendo crecimiento reducido en comparación con su valoración superior en P/E y por lo tanto requiere de atención"
+      ]
+    },
+    "timestamp": "2026-06-10T15:44:34.627604"
+  },
+  "MSFT": {
+    "analysis": {
+      "score": 8.5,
+      "confidence": 97,
+      "risk_level": "LOW",
+      "recommendation": "BUY",
+      "key_metrics": {
+        "P/E": 30.96,
+        "P/B": 5.48,
+        "deuda/equity": 0.24,
+        "current ratio": 1.58,
+        "revenue growth YoY": 14.5,
+        "earnings growth": 63.7,
+        "gross margin": 0.66,
+        "operating margin": 0.39,
+        "net margin": 0.28,
+        "ROE": 0.33,
+        "Altman Z-Score": 3.47
+      },
+      "red_flags": [],
+      "summary": "MSFT reports robust growth in revenue and earnings while maintaining sound financial health. The P/E ratio is slightly high but justified by the impressive growth figures. While the deuda/equity ratio could be improved, it is still within acceptable levels. Current liquidity and Altman Z-Score indicate a healthy company with minimal risk."
+    },
+    "timestamp": "2026-06-11T12:40:33.982898"
+  }
+}
