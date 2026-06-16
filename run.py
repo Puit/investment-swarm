@@ -82,6 +82,7 @@ def check_dependencies():
         "pandas": "pandas",
         "yfinance": "yfinance",
         "crewai": "crewai",
+        "ib-insync": "ib_insync",  # Para Interactive Brokers
     }
     
     missing = []
@@ -110,11 +111,11 @@ class UnifiedLauncher:
     
     def start_telegram_bot(self):
         """Inicia Telegram Bot."""
-        print_service_starting("TELEGRAM BOT", "python telegram_bot.py")
+        print_service_starting("TELEGRAM BOT", "python telegram_bot_main.py")
         
         try:
             process = subprocess.Popen(
-                [sys.executable, "telegram_bot.py"],
+                [sys.executable, "telegram_bot_main.py"],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
@@ -124,7 +125,7 @@ class UnifiedLauncher:
             time.sleep(2)
             
             if process.poll() is None:
-                print_service_ready("TELEGRAM BOT", "Escuchando comandos")
+                print_service_ready("TELEGRAM BOT", "Escuchando comandos (Paper + Live)")
             else:
                 _, stderr = process.communicate()
                 print_error("TELEGRAM BOT", stderr)

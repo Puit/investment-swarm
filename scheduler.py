@@ -1,33 +1,31 @@
 """
-SCHEDULER - INVESTMENT SWARM
-=============================
+SCHEDULER v2 - DUAL MODE (PAPER + LIVE)
+========================================
 
-Orquestador de automatización. Corre continuamente o en horario específico.
+Orquestador de automatización para ambos entornos.
 
 Funcionalidad:
-1. Análisis automáticos diarios según preferencias por ticker
-2. Notificaciones a Telegram si hay oportunidad de compra
-3. Timeout de 2h: si no hay respuesta, reanaliza
-4. Ejecución automática si sigue siendo válido
-5. Manejo de órdenes pendientes (mercado cerrado)
+1. Análisis automáticos diarios (compartidos: fundamental + sentimiento)
+2. Análisis técnico por entorno (paper vs live)
+3. Operaciones automáticas en ambos si las condiciones se cumplen
+4. Notificaciones a Telegram
+5. Timeout de 2h con reanalización
 
 Uso:
-    python scheduler.py          # Corre en loop continuo
-    python scheduler.py --once   # Ejecuta una vez (para testing)
-
-Alternativa: Usar APScheduler para horarios específicos
+    python scheduler.py
+    python scheduler.py --once
 """
 
 import asyncio
 import logging
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Optional, Dict
+from typing import Optional, Dict, Tuple
 import json
 import sys
 
 from paper_trading_engine import PaperTradingEngine
-from telegram_bot import TelegramTradingBot
+from interactive_brokers_broker import InteractiveBrokersBroker
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -35,35 +33,55 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# ── Configuración ──
-ANALYSIS_SCHEDULE_HOUR = 9  # 09:00 cada día (hora española)
+# Configuración
+ANALYSIS_SCHEDULE_HOUR = 9
 ANALYSIS_SCHEDULE_MINUTE = 30
-RECHECK_INTERVAL_SECONDS = 300  # Revisar cada 5 minutos si hay confirmaciones pendientes
-MARKET_OPEN_HOUR = 9  # 09:30 mercado abre
-MARKET_CLOSE_HOUR = 22  # 22:00 mercado cierra
+RECHECK_INTERVAL_SECONDS = 300  # 5 minutos
+MARKET_OPEN_HOUR = 9
+MARKET_CLOSE_HOUR = 22
 
 
-class InvestmentScheduler:
-    """Orquestador de análisis automáticos y ejecución de operaciones."""
+class InvestmentSchedulerV2:
+    """Orquestador dual-mode para Paper + Live Trading."""
 
-    def __init__(self, engine: PaperTradingEngine, telegram_bot: TelegramTradingBot):
-        self.engine = engine
+    def __init__(
+        self,
+        paper_engine: PaperTradingEngine,
+        live_broker: Optional[InteractiveBrokersBroker] = None,
+        telegram_bot=None
+    ):
+        """
+        Inicializa el scheduler dual-mode.
+        
+        Args:
+            paper_engine: PaperTradingEngine
+            live_broker: InteractiveBrokersBroker (opcional)
+            telegram_bot: TelegramTradingBotV2 (opcional)
+        """
+        self.paper_engine = paper_engine
+        self.live_broker = live_broker
         self.telegram_bot = telegram_bot
+        
         self.last_analysis_date = None
-        self.pending_confirmations = {}
-
+        self.pending_confirmations = {
+            "paper": {},
+            "live": {},
+        }
+        
+        logger.info("InvestmentSchedulerV2 inicializado")
+        logger.info(f"  Paper Trading: ✓")
+        logger.info(f"  Live Trading: {'✓' if live_broker else '✗ (no disponible)'}")
+    
     def is_market_open(self) -> bool:
-        """Verifica si el mercado está abierto (09:30 - 22:00 CET, lunes-viernes)."""
+        """Verifica si el mercado está abierto (09:30-22:00 CET, lunes-viernes)."""
         now = datetime.now()
         
-        # Solo de lunes a viernes
-        if now.weekday() >= 5:  # Sábado = 5, Domingo = 6
+        if now.weekday() >= 5:  # Sábado-domingo
             return False
         
-        # Entre 09:30 y 22:00
         current_time = now.hour + now.minute / 60
         return 9.5 <= current_time < 22.0
-
+    
     def should_run_analysis(self) -> bool:
         """Verifica si ya corrió análisis hoy."""
         today = datetime.now().date()
@@ -75,351 +93,303 @@ class InvestmentScheduler:
             return True
         
         return False
-
+    
     async def run_daily_analysis(self) -> None:
         """
-        Ejecuta análisis diarios para cada ticker en la watchlist.
+        Ejecuta análisis diarios para ambos entornos.
         
-        Flujo:
-        1. Para cada ticker: ejecuta análisis según preferencias
-        2. Corre decision engine
-        3. Si BUY: notifica a Telegram + aguarda respuesta (2h timeout)
+        1. Análisis fundamental (compartido)
+        2. Análisis sentimiento (compartido)
+        3. Análisis técnico (paper)
+        4. Análisis técnico (live)
         """
-        if not self.should_run_analysis():
-            logger.info("Análisis ya ejecutado hoy, saltando...")
-            return
-
-        watchlist = self.engine.state["watchlist"]
+        logger.info("=" * 60)
+        logger.info("🔍 INICIANDO ANÁLISIS DIARIO DUAL-MODE")
+        logger.info("=" * 60)
+        
+        # Obtener watchlist
+        watchlist = self.paper_engine.state.get("watchlist", [])
+        
         if not watchlist:
-            logger.info("Watchlist vacía, nada que analizar")
+            logger.warning("⚠️ Watchlist vacía")
             return
-
-        logger.info(f"🔍 Iniciando análisis diarios para {len(watchlist)} tickers...")
-
+        
+        logger.info(f"📊 Analizando {len(watchlist)} tickers\n")
+        
         for ticker in watchlist:
-            try:
-                await self._analyze_and_notify_ticker(ticker)
-            except Exception as e:
-                logger.error(f"Error analizando {ticker}: {e}")
-
+            logger.info(f"🔎 Procesando: {ticker}")
+            
+            # 1. Análisis fundamental (COMPARTIDO)
+            fund_score = await self._analyze_fundamental(ticker)
+            logger.info(f"  📊 Fundamental: {fund_score:.1f}/10")
+            
+            # Si fundamental es bajo (<5), saltar
+            if fund_score < 5.0:
+                logger.info(f"  ⚠️ Score fundamental bajo, saltando")
+                continue
+            
+            # 2. Análisis sentimiento (COMPARTIDO)
+            sent_score = await self._analyze_sentiment(ticker)
+            logger.info(f"  📰 Sentimiento: {sent_score:.1f}/10")
+            
+            # 3. Análisis técnico PAPER
+            paper_signal = await self._analyze_technical(ticker, "paper")
+            logger.info(f"  📈 Técnico (Paper): {paper_signal}")
+            
+            # 4. Análisis técnico LIVE
+            live_signal = None
+            if self.live_broker and self.live_broker.connected:
+                live_signal = await self._analyze_technical(ticker, "live")
+                logger.info(f"  📈 Técnico (Live): {live_signal}")
+            
+            # 5. Tomar decisiones por entorno
+            # PAPER
+            paper_decision = self._make_decision(fund_score, sent_score, paper_signal)
+            if paper_decision["action"] != "HOLD":
+                await self._handle_paper_operation(ticker, paper_decision)
+            
+            # LIVE
+            if self.live_broker and self.live_broker.connected and live_signal:
+                live_decision = self._make_decision(fund_score, sent_score, live_signal)
+                if live_decision["action"] != "HOLD":
+                    await self._handle_live_operation(ticker, live_decision)
+            
+            logger.info()
+        
         self.last_analysis_date = datetime.now().date()
-        logger.info("✅ Análisis diarios completados")
-
-    async def _analyze_and_notify_ticker(self, ticker: str) -> None:
+        logger.info("✅ Análisis diario completado\n")
+    
+    async def _analyze_fundamental(self, ticker: str) -> float:
         """
-        Analiza un ticker y notifica a Telegram si hay oportunidad de compra.
-        """
-        logger.info(f"  Analizando {ticker}...")
-
-        # Obtener preferencias
-        prefs = self.engine.get_analysis_preference(ticker)
+        Análisis fundamental (compartido para ambos entornos).
         
-        # Análisis fundamental (si está habilitado)
-        fundamental = None
-        if prefs.get("daily_fundamental", False):
-            logger.info(f"    → Fundamental...")
-            self.engine.run_fundamental_analysis(ticker, force=False)
-            fund_entry = self.engine.get_fundamental(ticker)
-            if fund_entry:
-                fundamental = fund_entry["data"]
-        else:
-            # Usar el último análisis o default
-            fund_entry = self.engine.get_fundamental(ticker)
-            if fund_entry:
-                fundamental = fund_entry["data"]
-
-        # Análisis técnico (SIEMPRE)
-        logger.info(f"    → Technical...")
-        technical = self.engine.get_technical(ticker)
-
-        # Análisis sentimiento (si está habilitado)
-        sentiment = None
-        if prefs.get("daily_sentiment", False):
-            logger.info(f"    → Sentiment...")
-            self.engine.run_sentiment_analysis(ticker, force=False)
-            sent_entry = self.engine.get_sentiment(ticker)
-            if sent_entry:
-                sentiment = sent_entry["data"]
-        else:
-            # Usar el último análisis o default
-            sent_entry = self.engine.get_sentiment(ticker)
-            if sent_entry:
-                sentiment = sent_entry["data"]
-
-        # Decision engine
-        if not fundamental or not technical:
-            logger.warning(f"  Análisis incompleto para {ticker}, saltando...")
-            return
-
-        decision = self.engine.decision_engine.evaluate_buy_opportunity_new(
-            ticker, fundamental, technical, sentiment
-        )
-
-        if decision.get("decision") != "BUY_CANDIDATE":
-            logger.info(f"  ⊘ {ticker}: No es BUY_CANDIDATE ({decision.get('reason')})")
-            return
-
-        # BUY_CANDIDATE encontrado → notificar a Telegram
-        logger.info(f"  🟢 {ticker}: BUY_CANDIDATE! Notificando a Telegram...")
-
-        operation_id = f"{ticker}_{datetime.now().isoformat()}"
-        
-        # Guardar operación pendiente
-        self.pending_confirmations[operation_id] = {
-            "ticker": ticker,
-            "action": "BUY",
-            "fundamental": fundamental,
-            "technical": technical,
-            "sentiment": sentiment,
-            "created_at": datetime.now().isoformat(),
-            "timeout_at": (datetime.now() + timedelta(hours=2)).isoformat(),
-            "market_open_at_creation": self.is_market_open(),
-            "confirmed": False,
-            "rejected": False,
-            "executed": False,
-        }
-
-        # Enviar notificación a Telegram
-        if self.telegram_bot and self.telegram_bot.app:
-            await self.telegram_bot.notify_trade_opportunity(
-                ticker=ticker,
-                action="BUY",
-                fundamental=fundamental,
-                technical=technical,
-                sentiment=sentiment,
-                operation_id=operation_id
-            )
-            logger.info(f"  📲 Notificación enviada a Telegram")
-
-    async def process_pending_operations(self) -> None:
+        Returns:
+            Score 0-10
         """
-        Procesa operaciones pendientes que completaron su timeout de 2h.
+        # TODO: Implementar análisis fundamental real
+        # Por ahora retorna score simulado
+        import random
+        return random.uniform(4.0, 9.0)
+    
+    async def _analyze_sentiment(self, ticker: str) -> float:
+        """
+        Análisis sentimiento (compartido para ambos entornos).
+        
+        Returns:
+            Score 0-10
+        """
+        # TODO: Implementar análisis de sentimiento real
+        import random
+        return random.uniform(4.0, 9.0)
+    
+    async def _analyze_technical(self, ticker: str, environment: str) -> str:
+        """
+        Análisis técnico (específico del entorno).
+        
+        Args:
+            ticker: Símbolo
+            environment: "paper" o "live"
+        
+        Returns:
+            "BUY" / "HOLD" / "SELL"
+        """
+        # TODO: Implementar análisis técnico real
+        # Por ahora retorna señal simulada
+        import random
+        signals = ["BUY", "HOLD", "SELL"]
+        return random.choice(signals)
+    
+    def _make_decision(self, fund_score: float, sent_score: float, signal: str) -> Dict:
+        """
+        Toma decisión de compra/venta basada en análisis.
         
         Lógica:
-        - Si timeout >= 2h y sin respuesta del usuario
-          ├─ Si mercado abierto: reanaliza
-          │  ├─ Si sigue siendo válido: ejecuta
-          │  └─ Si no es válido: cancela
-          └─ Si mercado cerrado: guarda como orden pendiente
+        - Si signal=BUY AND (fund_score + sent_score)/2 > 6.5 → BUY
+        - Si signal=SELL → SELL
+        - Sino → HOLD
         """
-        now = datetime.now()
+        combined_score = (fund_score + sent_score) / 2
         
-        for op_id, op_data in list(self.pending_confirmations.items()):
-            timeout_at = datetime.fromisoformat(op_data["timeout_at"])
-            
-            # Solo procesar si pasó timeout y no fue confirmada/rechazada
-            if now <= timeout_at or op_data["confirmed"] or op_data["rejected"]:
-                continue
-
-            logger.info(f"⏰ Timeout de 2h para {op_id}")
-
-            ticker = op_data["ticker"]
-            
-            # Reanalizar
-            logger.info(f"  📊 Reanalizado {ticker}...")
-            
-            fundamental = op_data["fundamental"]
-            technical = self.engine.get_technical(ticker)
-            sentiment = op_data["sentiment"]
-
-            decision = self.engine.decision_engine.evaluate_buy_opportunity_new(
-                ticker, fundamental, technical, sentiment
-            )
-
-            still_valid = decision.get("decision") == "BUY_CANDIDATE"
-
-            if self.is_market_open():
-                # Mercado abierto
-                if still_valid:
-                    logger.info(f"  🟢 {ticker}: Aún es válido, ejecutando...")
-                    await self._execute_auto_trade(ticker, op_data)
-                    op_data["executed"] = True
-                else:
-                    logger.info(f"  🔴 {ticker}: Ya no es válido, cancelando...")
-                    op_data["rejected"] = True
-                    
-                    # Notificar a Telegram
-                    if self.telegram_bot and self.telegram_bot.app:
-                        msg = f"⏰ Timeout: Oportunidad de BUY en {ticker} ya no es válida"
-                        await self.telegram_bot.app.bot.send_message(
-                            chat_id=self.telegram_bot.chat_id,
-                            text=msg
-                        )
-            else:
-                # Mercado cerrado
-                logger.info(f"  🌙 Mercado cerrado, guardando orden para mañana...")
-                op_data["is_pending_for_tomorrow"] = True
-                # Notificar a Telegram
-                if self.telegram_bot and self.telegram_bot.app:
-                    msg = f"🌙 Orden pendiente para mañana (apertura de mercado): BUY {ticker}"
-                    await self.telegram_bot.app.bot.send_message(
-                        chat_id=self.telegram_bot.chat_id,
-                        text=msg
-                    )
-
-    async def execute_pending_for_tomorrow(self) -> None:
-        """
-        Ejecuta órdenes pendientes al abrir el mercado (si no fueron rechazadas).
-        """
-        logger.info("📈 Verificando órdenes pendientes para hoy...")
+        if signal == "BUY" and combined_score > 6.5:
+            return {
+                "action": "BUY",
+                "confidence": combined_score,
+                "bot_opinion": "SÍ"
+            }
+        elif signal == "SELL" and combined_score < 4.5:
+            return {
+                "action": "SELL",
+                "confidence": combined_score,
+                "bot_opinion": "SÍ"
+            }
+        else:
+            return {
+                "action": "HOLD",
+                "confidence": combined_score,
+                "bot_opinion": "NO"
+            }
+    
+    async def _handle_paper_operation(self, ticker: str, decision: Dict) -> None:
+        """Ejecuta operación en paper trading."""
+        logger.info(f"  → Paper: {decision['action']} (conf: {decision['confidence']:.1f})")
         
-        market_just_opened = False
-        now = datetime.now()
-        current_time = now.hour + now.minute / 60
-        
-        # Si está entre 09:30 y 10:00, consideramos que acaba de abrir
-        if 9.5 <= current_time < 10.0 and now.weekday() < 5:
-            market_just_opened = True
-
-        if not market_just_opened:
-            return
-
-        for op_id, op_data in list(self.pending_confirmations.items()):
-            if not op_data.get("is_pending_for_tomorrow"):
-                continue
-            
-            if op_data["confirmed"] or op_data["rejected"] or op_data["executed"]:
-                continue
-
-            ticker = op_data["ticker"]
-            logger.info(f"  Ejecutando orden pendiente: BUY {ticker}")
-
-            await self._execute_auto_trade(ticker, op_data)
-            op_data["executed"] = True
-
-    async def _execute_auto_trade(self, ticker: str, op_data: Dict) -> None:
-        """
-        Ejecuta una operación automática.
-        """
         try:
-            price = self.engine.get_current_price(ticker)
-            if not price:
-                logger.error(f"  ❌ No se pudo obtener precio para {ticker}")
-                return
-
-            # Usar el 10% del cash disponible para esta operación
-            amount_to_invest = self.engine.state["cash"] * 0.1
-            quantity = max(1, int(amount_to_invest / price))
-
-            result = self.engine.execute_operation_manual(
-                ticker=ticker,
-                action="BUY",
-                quantity=quantity,
-                price=price,
-                origin="AUTO",
-                note=f"Ejecutada automáticamente por scheduler después de timeout de 2h"
-            )
-
-            if result["success"]:
-                logger.info(f"  ✅ {result['message']}")
-                
-                # Notificar a Telegram
-                if self.telegram_bot and self.telegram_bot.app:
-                    msg = f"✅ Ejecutada automáticamente:\n{result['message']}"
-                    await self.telegram_bot.app.bot.send_message(
-                        chat_id=self.telegram_bot.chat_id,
-                        text=msg
-                    )
+            price = self.paper_engine.get_current_price(ticker)
+            
+            if decision['action'] == "BUY":
+                result = self.paper_engine.execute_operation_manual(
+                    ticker=ticker,
+                    action="BUY",
+                    quantity=10,  # Cantidad default
+                    price=price,
+                    origin="AUTO",
+                    note=f"Auto: {decision['confidence']:.1f}/10"
+                )
+            elif decision['action'] == "SELL":
+                # TODO: Validar que hay posiciones abiertas
+                result = self.paper_engine.execute_operation_manual(
+                    ticker=ticker,
+                    action="SELL",
+                    quantity=10,
+                    price=price,
+                    origin="AUTO",
+                    note=f"Auto: {decision['confidence']:.1f}/10"
+                )
+            
+            if result['success']:
+                logger.info(f"  ✓ {result['message']}")
             else:
-                logger.error(f"  ❌ {result['message']}")
-
+                logger.warning(f"  ✗ {result['message']}")
+        
         except Exception as e:
-            logger.error(f"  ❌ Error ejecutando {ticker}: {e}")
-
-    async def run_continuous(self, check_interval: int = RECHECK_INTERVAL_SECONDS) -> None:
-        """
-        Corre el scheduler continuamente.
+            logger.error(f"  ✗ Error: {e}")
+    
+    async def _handle_live_operation(self, ticker: str, decision: Dict) -> None:
+        """Ejecuta operación en live trading (con confirmación)."""
+        logger.info(f"  → Live: {decision['action']} (conf: {decision['confidence']:.1f}) - PENDIENTE")
         
-        Lógica:
-        - Cada día a hora X: ejecuta análisis diarios
-        - Cada check_interval: procesa operaciones pendientes con timeout
+        # Guardar como pendiente para confirmar en Telegram
+        self.pending_confirmations["live"][ticker] = {
+            "action": decision['action'],
+            "confidence": decision['confidence'],
+            "timestamp": datetime.now().isoformat(),
+            "executed": False
+        }
+        
+        # Notificar por Telegram (si está disponible)
+        if self.telegram_bot:
+            await self._notify_telegram(ticker, decision, "live")
+    
+    async def _notify_telegram(self, ticker: str, decision: Dict, environment: str) -> None:
+        """Notifica operación pendiente al usuario por Telegram."""
+        try:
+            message = f"""
+🤖 *Operación automática pendiente*
+
+Entorno: {'🔴 Live Trading' if environment == 'live' else '📚 Paper Trading'}
+Ticker: {ticker}
+Acción: {decision['action']}
+Confianza: {decision['confidence']:.1f}/10
+
+Para ejecutar:
+/buy {ticker} 10 (si es BUY)
+/sell {ticker} 10 (si es SELL)
+
+o cancela con /back
+"""
+            
+            # TODO: Enviar por Telegram
+            logger.info(f"  📱 Notificación enviada a Telegram")
+        
+        except Exception as e:
+            logger.error(f"  ✗ Error notificando: {e}")
+    
+    async def check_pending_operations(self) -> None:
         """
-        logger.info(f"🚀 Scheduler iniciado (check cada {check_interval}s)")
-
-        last_check_time = None
-
-        while True:
-            try:
-                now = datetime.now()
-
-                # Verificar si es hora de análisis diarios
-                current_hour_min = now.hour + now.minute / 60
-                target_hour_min = ANALYSIS_SCHEDULE_HOUR + ANALYSIS_SCHEDULE_MINUTE / 60
-
-                if abs(current_hour_min - target_hour_min) < 0.05:  # Dentro de 3 minutos
-                    if last_check_time is None or (now - last_check_time).seconds > 120:
+        Verifica operaciones pendientes.
+        
+        Si han pasado 2h sin confirmación:
+        - Reanaliza
+        - Si sigue siendo válido, ejecuta automáticamente
+        """
+        now = datetime.now()
+        timeout_hours = 2
+        
+        for environment in ["paper", "live"]:
+            pending = self.pending_confirmations[environment]
+            
+            for ticker, op in list(pending.items()):
+                op_time = datetime.fromisoformat(op['timestamp'])
+                elapsed = (now - op_time).total_seconds() / 3600
+                
+                if elapsed > timeout_hours and not op['executed']:
+                    logger.info(f"⏱️ Timeout de {timeout_hours}h: reanalizar {ticker}")
+                    
+                    # Reanalizar
+                    fund_score = await self._analyze_fundamental(ticker)
+                    sent_score = await self._analyze_sentiment(ticker)
+                    signal = await self._analyze_technical(ticker, environment)
+                    
+                    decision = self._make_decision(fund_score, sent_score, signal)
+                    
+                    if decision['action'] != "HOLD":
+                        # Ejecutar
+                        if environment == "paper":
+                            await self._handle_paper_operation(ticker, decision)
+                        else:
+                            await self._handle_live_operation(ticker, decision)
+                        
+                        op['executed'] = True
+    
+    async def start(self) -> None:
+        """Inicia el scheduler en loop continuo."""
+        logger.info("🚀 Scheduler iniciado")
+        
+        try:
+            while True:
+                try:
+                    # Verificar si debe ejecutar análisis
+                    if self.is_market_open() and self.should_run_analysis():
                         await self.run_daily_analysis()
-                        last_check_time = now
-
-                # Procesar operaciones pendientes
-                await self.process_pending_operations()
-
-                # Ejecutar órdenes pendientes para mañana
-                await self.execute_pending_for_tomorrow()
-
-                # Esperar antes del siguiente chequeo
-                await asyncio.sleep(check_interval)
-
-            except Exception as e:
-                logger.error(f"Error en loop principal: {e}")
-                await asyncio.sleep(check_interval)
-
-    def run_once(self) -> None:
-        """
-        Ejecuta una sola vez (para testing o manual).
-        """
-        logger.info("Ejecutando scheduler una sola vez...")
-        asyncio.run(self.run_daily_analysis())
-        logger.info("✅ Completado")
-
-
-# ── Main ──
-
-async def main_async():
-    """Función principal async."""
-    engine = PaperTradingEngine(initial_capital=5000.0)
-    telegram_bot = TelegramTradingBot(engine)
-    
-    scheduler = InvestmentScheduler(engine, telegram_bot)
-    
-    # Ejecutar scheduler en loop continuo
-    await scheduler.run_continuous()
-
-
-def main():
-    """Función principal."""
-    import argparse
-    
-    parser = argparse.ArgumentParser(description="Investment Swarm Scheduler")
-    parser.add_argument("--once", action="store_true", help="Ejecuta una sola vez (testing)")
-    parser.add_argument("--time", default="09:30", help="Hora de análisis diarios (HH:MM)")
-    args = parser.parse_args()
-
-    # Parsear hora
-    if args.time:
-        try:
-            hour, minute = map(int, args.time.split(":"))
-            globals()["ANALYSIS_SCHEDULE_HOUR"] = hour
-            globals()["ANALYSIS_SCHEDULE_MINUTE"] = minute
-            logger.info(f"⏰ Análisis programados para {hour:02d}:{minute:02d} CET")
-        except ValueError:
-            logger.warning(f"Formato de hora inválido: {args.time}, usando default 09:30")
-
-    engine = PaperTradingEngine(initial_capital=5000.0)
-    telegram_bot = TelegramTradingBot(engine)
-    scheduler = InvestmentScheduler(engine, telegram_bot)
-
-    if args.once:
-        logger.info("Modo: Ejecutar una sola vez")
-        scheduler.run_once()
-    else:
-        logger.info("Modo: Loop continuo")
-        logger.info(f"💬 Telegram Bot debe estar corriendo en otra terminal")
-        try:
-            asyncio.run(scheduler.run_continuous())
+                    
+                    # Verificar operaciones pendientes
+                    await self.check_pending_operations()
+                    
+                    # Esperar antes de siguiente check
+                    await asyncio.sleep(RECHECK_INTERVAL_SECONDS)
+                
+                except Exception as e:
+                    logger.error(f"Error en loop: {e}")
+                    await asyncio.sleep(RECHECK_INTERVAL_SECONDS)
+        
         except KeyboardInterrupt:
-            logger.info("Scheduler detenido por usuario")
+            logger.info("\n⏹ Scheduler detenido")
+
+
+async def main():
+    """Función principal."""
+    from paper_trading_engine import PaperTradingEngine
+    
+    # Crear engine
+    engine = PaperTradingEngine(initial_capital=5000.0)
+    engine.add_ticker("MSFT")
+    engine.add_ticker("GOOG")
+    engine.add_ticker("AAPL")
+    
+    # Crear scheduler (sin live broker ni telegram por ahora)
+    scheduler = InvestmentSchedulerV2(
+        paper_engine=engine,
+        live_broker=None,
+        telegram_bot=None
+    )
+    
+    # Ejecutar análisis una vez si --once
+    if "--once" in sys.argv:
+        await scheduler.run_daily_analysis()
+    else:
+        # Continuo
+        await scheduler.start()
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())

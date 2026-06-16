@@ -13,4 +13,4 @@ Uso:
 """
 
 __version__ = "1.0.0"
-__all__ = ["test_suite", "diagnose_telegram"]
+__all__ = ["test_suite", "diagnose_telegram", "test_telegram_bot"]

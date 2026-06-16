@@ -1,548 +1,523 @@
 """
-TELEGRAM BOT - INVESTMENT SWARM
-================================
+TELEGRAM BOT v2 - MÁQUINA DE ESTADOS
+=====================================
 
-Bot de Telegram para:
-1. Ejecutar operaciones manuales (/compra, /vende, /posiciones, etc.)
-2. Recibir notificaciones de operaciones automáticas del scheduler
-3. Confirmar/rechazar operaciones con timeout de 2h
-4. Reportar estado del paper trading
+Versión mejorada con soporte para dual-mode (paper + live trading).
 
-Instalación:
-    pip install python-telegram-bot
-
-Configuración:
-    1. Crear bot con BotFather en Telegram
-    2. Obtener TELEGRAM_BOT_TOKEN
-    3. Guardar en archivo .env o como variable de entorno
+Estados:
+- NO_TRADING: Visualización únicamente (ambos entornos)
+- PAPER_TRADING: Operaciones en paper trading
+- LIVE_TRADING: Operaciones en live trading (dinero real)
 
 Uso:
-    python telegram_bot.py
+    bot = TelegramTradingBot(
+        paper_engine=engine,
+        live_broker=broker,
+        chat_id="123456789"
+    )
+    await bot.start_polling()
 """
 
 import logging
-import os
-import asyncio
-from datetime import datetime, timedelta
-from pathlib import Path
-from typing import Optional, Dict
-import json
+from enum import Enum
+from typing import Dict, Optional
+from datetime import datetime
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes, ConversationHandler
-from dotenv import load_dotenv
-
-from paper_trading_engine import (
-    PaperTradingEngine,
-    OPERATION_ORIGIN_MANUAL_TELEGRAM,
+from telegram.ext import (
+    Application, CommandHandler, MessageHandler, CallbackQueryHandler,
+    ContextTypes, filters, ConversationHandler
 )
 
-# Cargar variables de entorno
-load_dotenv()
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")  # Chat ID del usuario
-
-if not TELEGRAM_BOT_TOKEN:
-    raise ValueError("TELEGRAM_BOT_TOKEN no configurado. Añade en .env o como variable de entorno.")
-
-logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    level=logging.INFO,
-)
 logger = logging.getLogger(__name__)
 
-# Estados para conversaciones
-AWAITING_BUY_TICKER, AWAITING_BUY_QUANTITY = range(2)
-AWAITING_SELL_TICKER, AWAITING_SELL_QUANTITY = range(2, 4)
 
-# Timeouts y pendientes
-OPERATION_TIMEOUT_SECONDS = 2 * 3600  # 2 horas en segundos
-PENDING_OPERATIONS_FILE = Path("data/pending_operations.json")
+class TradingMode(Enum):
+    """Estados posibles del bot."""
+    NO_TRADING = "no_trading"
+    PAPER_TRADING = "paper_trading"
+    LIVE_TRADING = "live_trading"
 
 
-class TelegramTradingBot:
-    """Bot de Telegram integrado con PaperTradingEngine."""
-
-    def __init__(self, engine: PaperTradingEngine, chat_id: Optional[str] = None):
-        self.engine = engine
-        self.chat_id = chat_id or TELEGRAM_CHAT_ID
-        self.pending_operations = self._load_pending_operations()
-        self.app = None
-
-    # ── Persistencia de operaciones pendientes ───────────────────
-
-    def _load_pending_operations(self) -> Dict:
-        """Carga operaciones pendientes desde disco."""
-        if PENDING_OPERATIONS_FILE.exists():
-            try:
-                with open(PENDING_OPERATIONS_FILE, "r") as f:
-                    return json.load(f)
-            except (json.JSONDecodeError, OSError):
-                return {}
-        return {}
-
-    def _save_pending_operations(self) -> None:
-        """Guarda operaciones pendientes en disco."""
-        PENDING_OPERATIONS_FILE.parent.mkdir(parents=True, exist_ok=True)
-        with open(PENDING_OPERATIONS_FILE, "w") as f:
-            json.dump(self.pending_operations, f, indent=2, default=str)
-
-    # ── Comandos del usuario ─────────────────────────────────────
-
-    async def cmd_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Comando /start - welcome."""
-        welcome = """
-🤖 Investment Swarm - Telegram Trading Bot
-
-Available commands:
-/buy - Buy stocks
-/sell - Sell stocks
-/positions - View open positions
-/portfolio - View portfolio summary
-/analysis - View available analysis
-/preferences - Configure daily analysis
-/help - View this help
-
-Examples:
-/buy MSFT 100  → Buy 100 MSFT
-/sell GOOG 50   → Sell 50 GOOG
+class TelegramTradingBotV2:
+    """Bot de Telegram con máquina de estados para dual-mode trading."""
+    
+    def __init__(self, paper_engine, live_broker=None, chat_id: str = None):
         """
-        await update.message.reply_text(welcome)
-
-    async def cmd_buy(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Comando /buy TICKER QUANTITY."""
-        try:
-            if len(context.args) < 2:
-                await update.message.reply_text(
-                    "Usage: /buy TICKER QUANTITY\nExample: /buy MSFT 100"
-                )
-                return
-
-            ticker = context.args[0].upper()
+        Inicializa el bot.
+        
+        Args:
+            paper_engine: PaperTradingEngine (paper trading)
+            live_broker: InteractiveBrokersBroker (live trading)
+            chat_id: Chat ID del usuario (para notificaciones)
+        """
+        self.paper_engine = paper_engine
+        self.live_broker = live_broker
+        self.chat_id = chat_id
+        self.app = None
+        
+        # Estado de usuarios (dict: user_id → TradingMode)
+        self.user_modes: Dict[int, TradingMode] = {}
+        
+        # Operaciones pendientes (dict: user_id → lista de operaciones)
+        self.pending_operations: Dict[int, list] = {}
+        
+        logger.info("TelegramTradingBotV2 inicializado")
+    
+    async def setup(self, token: str) -> None:
+        """Configura el bot con el token."""
+        self.app = Application.builder().token(token).build()
+        self._register_handlers()
+        logger.info("Bot configurado con handlers")
+    
+    def _register_handlers(self) -> None:
+        """Registra todos los handlers del bot."""
+        
+        # Comandos principales
+        self.app.add_handler(CommandHandler("start", self.cmd_start))
+        self.app.add_handler(CommandHandler("help", self.cmd_help))
+        
+        # Cambio de modo
+        self.app.add_handler(CommandHandler("no_trading", self.cmd_no_trading))
+        self.app.add_handler(CommandHandler("paper_trading", self.cmd_paper_trading))
+        self.app.add_handler(CommandHandler("live_trading", self.cmd_live_trading))
+        
+        # Comandos específicos del modo
+        self.app.add_handler(CommandHandler("positions", self.cmd_positions))
+        self.app.add_handler(CommandHandler("portfolio", self.cmd_portfolio))
+        self.app.add_handler(CommandHandler("buy", self.cmd_buy))
+        self.app.add_handler(CommandHandler("sell", self.cmd_sell))
+        self.app.add_handler(CommandHandler("back", self.cmd_back))
+        
+        # Análisis
+        self.app.add_handler(CommandHandler("fundamental", self.cmd_fundamental))
+        self.app.add_handler(CommandHandler("sentiment", self.cmd_sentiment))
+        self.app.add_handler(CommandHandler("technical", self.cmd_technical))
+        
+        # Callbacks
+        self.app.add_handler(CallbackQueryHandler(self.button_callback))
+        
+        logger.info("Handlers registrados")
+    
+    async def cmd_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Comando /start - Mostrar estado actual."""
+        user_id = update.effective_user.id
+        mode = self.user_modes.get(user_id, TradingMode.NO_TRADING)
+        
+        # Obtener datos
+        paper_portfolio = self.paper_engine.get_portfolio_summary()
+        live_portfolio = None
+        if self.live_broker and self.live_broker.connected:
             try:
-                quantity = int(context.args[1])
-            except ValueError:
-                await update.message.reply_text("Quantity must be a number")
-                return
+                live_portfolio = self.live_broker.get_portfolio_summary()
+            except:
+                pass
+        
+        # Mensaje
+        text = f"""
+🤖 *Investment Swarm Bot*
 
-            if quantity <= 0:
-                await update.message.reply_text("Quantity must be positive")
-                return
+*Estado actual:* {self._format_mode(mode)}
 
-            # Obtener precio actual
-            price = self.engine.get_current_price(ticker)
-            if not price:
-                await update.message.reply_text(f"❌ Could not get price for {ticker}")
-                return
+📊 *Paper Trading*
+  💰 Cash: ${paper_portfolio['cash']:,.2f}
+  📈 Total: ${paper_portfolio['total_value']:,.2f}
+  📍 Posiciones: {len(paper_portfolio['positions'])}
+"""
+        
+        if live_portfolio:
+            text += f"""
+🔴 *Live Trading*
+  💰 Cash: ${live_portfolio['cash']:,.2f}
+  📈 Total: ${live_portfolio['total_value']:,.2f}
+  📍 Posiciones: {len(live_portfolio['positions'])}
+"""
+        
+        text += """
+*Opciones:*
+/paper_trading - Operar en paper
+/live_trading - Operar en vivo
+/no_trading - Solo visualizar
+/help - Mostrar comandos
+"""
+        
+        await update.message.reply_text(text, parse_mode="Markdown")
+    
+    async def cmd_no_trading(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Comando /no_trading - Cambiar a modo visualización."""
+        user_id = update.effective_user.id
+        self.user_modes[user_id] = TradingMode.NO_TRADING
+        
+        text = """
+👁️ *Modo Visualización Activado*
 
-            # Mostrar confirmación
-            cost = quantity * price
-            cash_after = self.engine.state["cash"] - cost
-            keyboard = [
-                [
-                    InlineKeyboardButton("✅ Confirm", callback_data=f"confirm_buy_{ticker}_{quantity}_{price}"),
-                    InlineKeyboardButton("❌ Cancel", callback_data="cancel_operation"),
-                ]
-            ]
-            reply_markup = InlineKeyboardMarkup(keyboard)
+Puedes ver posiciones y portfolio de ambos entornos.
+No puedes hacer operaciones.
 
-            message = f"""
-🛒 Buy confirmation:
+Comandos disponibles:
+/positions - Ver posiciones (ambos)
+/portfolio - Ver cartera (ambos)
+/fundamental - Análisis fundamental (compartido)
+/sentiment - Análisis sentimiento (compartido)
+/help - Comandos disponibles
 
-Ticker: {ticker}
-Quantity: {quantity}
-Price: ${price:.2f}
-Amount: ${cost:,.2f}
+Para operar:
+/paper_trading - Cambiar a paper trading
+/live_trading - Cambiar a live trading
+"""
+        
+        await update.message.reply_text(text, parse_mode="Markdown")
+    
+    async def cmd_paper_trading(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Comando /paper_trading - Cambiar a modo paper."""
+        user_id = update.effective_user.id
+        self.user_modes[user_id] = TradingMode.PAPER_TRADING
+        
+        portfolio = self.paper_engine.get_portfolio_summary()
+        
+        text = f"""
+📚 *Modo Paper Trading Activado*
 
-Available cash: ${self.engine.state["cash"]:,.2f}
-Cash after: ${cash_after:,.2f}
+📊 Estado actual:
+  💰 Cash: ${portfolio['cash']:,.2f}
+  📈 Total: ${portfolio['total_value']:,.2f}
+  📍 Posiciones: {len(portfolio['positions'])}
 
-Confirm?
-            """
-            await update.message.reply_text(message, reply_markup=reply_markup)
+Comandos disponibles:
+/buy TICKER QTY - Comprar
+/sell TICKER QTY - Vender
+/positions - Ver posiciones
+/portfolio - Ver cartera
+/technical - Análisis técnico
+/fundamental - Análisis fundamental (compartido)
+/sentiment - Análisis sentimiento (compartido)
+/back - Volver a visualización
 
-        except Exception as e:
-            logger.error(f"Error in /buy: {e}")
-            await update.message.reply_text(f"❌ Error: {e}")
-
-    async def cmd_sell(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Comando /sell TICKER QUANTITY."""
+⚠️ Paper trading: sin dinero real
+"""
+        
+        await update.message.reply_text(text, parse_mode="Markdown")
+    
+    async def cmd_live_trading(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Comando /live_trading - Cambiar a modo live."""
+        user_id = update.effective_user.id
+        
+        if not self.live_broker or not self.live_broker.connected:
+            await update.message.reply_text(
+                "❌ Live trading no disponible\n"
+                "Interactive Brokers no está conectado.",
+                parse_mode="Markdown"
+            )
+            return
+        
+        self.user_modes[user_id] = TradingMode.LIVE_TRADING
+        
         try:
-            if len(context.args) < 2:
-                await update.message.reply_text(
-                    "Usage: /sell TICKER QUANTITY\nExample: /sell GOOG 50"
-                )
-                return
+            portfolio = self.live_broker.get_portfolio_summary()
+            
+            text = f"""
+🔴 *Modo Live Trading Activado*
 
-            ticker = context.args[0].upper()
-            try:
-                quantity = int(context.args[1])
-            except ValueError:
-                await update.message.reply_text("Quantity must be a number")
-                return
+⚠️ *DINERO REAL - CUIDADO*
 
-            if quantity <= 0:
-                await update.message.reply_text("Quantity must be positive")
-                return
+📊 Estado actual:
+  💰 Cash: ${portfolio['cash']:,.2f}
+  📈 Total: ${portfolio['total_value']:,.2f}
+  📍 Posiciones: {len(portfolio['positions'])}
 
-            # Verificar que tiene la posición
-            if ticker not in self.engine.state["positions"]:
-                await update.message.reply_text(f"❌ You don't have an open position in {ticker}")
-                return
+Comandos disponibles:
+/buy TICKER QTY - Comprar (DINERO REAL)
+/sell TICKER QTY - Vender (DINERO REAL)
+/positions - Ver posiciones
+/portfolio - Ver cartera
+/technical - Análisis técnico
+/fundamental - Análisis fundamental (compartido)
+/sentiment - Análisis sentimiento (compartido)
+/back - Volver a visualización
 
-            total_qty = sum(lot["qty"] for lot in self.engine.state["positions"][ticker])
-            if quantity > total_qty:
-                await update.message.reply_text(
-                    f"❌ You want to sell {quantity}, but you only have {total_qty}"
-                )
-                return
-
-            # Obtener precio actual
-            price = self.engine.get_current_price(ticker)
-            if not price:
-                await update.message.reply_text(f"❌ Could not get price for {ticker}")
-                return
-
-            # Mostrar confirmación
-            value = quantity * price
-            keyboard = [
-                [
-                    InlineKeyboardButton("✅ Confirm", callback_data=f"confirm_sell_{ticker}_{quantity}_{price}"),
-                    InlineKeyboardButton("❌ Cancel", callback_data="cancel_operation"),
-                ]
-            ]
-            reply_markup = InlineKeyboardMarkup(keyboard)
-
-            message = f"""
-📊 Sell confirmation:
-
-Ticker: {ticker}
-Quantity: {quantity}
-Price: ${price:.2f}
-Amount: ${value:,.2f}
-
-Confirm?
-            """
-            await update.message.reply_text(message, reply_markup=reply_markup)
-
+⚠️ TODAS LAS OPERACIONES SON CON DINERO REAL
+"""
+            
+            await update.message.reply_text(text, parse_mode="Markdown")
+        
         except Exception as e:
-            logger.error(f"Error in /sell: {e}")
-            await update.message.reply_text(f"❌ Error: {e}")
-
+            logger.error(f"Error en live trading: {e}")
+            await update.message.reply_text(f"❌ Error: {str(e)}")
+    
     async def cmd_positions(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Comando /positions - View open positions."""
-        try:
-            summary = self.engine.get_portfolio_summary()
-
-            if not summary["positions"]:
-                await update.message.reply_text("📭 No open positions")
-                return
-
-            message = "📊 Open positions:\n\n"
-            for p in summary["positions"]:
-                message += (
-                    f"📌 {p['ticker']}\n"
-                    f"   Qty: {p['qty']}\n"
-                    f"   Entry: ${p['entry_price']:.2f}\n"
-                    f"   Current: ${p['current_price']:.2f}\n"
-                    f"   P&L: ${p['pnl']:.2f} ({p['pnl_pct']:+.2f}%)\n\n"
-                )
-
-            await update.message.reply_text(message)
-
-        except Exception as e:
-            logger.error(f"Error in /positions: {e}")
-            await update.message.reply_text(f"❌ Error: {e}")
-
+        """Comando /positions - Ver posiciones."""
+        user_id = update.effective_user.id
+        mode = self.user_modes.get(user_id, TradingMode.NO_TRADING)
+        
+        text = "📍 *Open positions*\n\n"
+        
+        # Paper trading
+        paper_portfolio = self.paper_engine.get_portfolio_summary()
+        if paper_portfolio['positions']:
+            text += "📚 *Paper Trading*\n"
+            for pos in paper_portfolio['positions']:
+                pnl_emoji = "📈" if pos['pnl'] >= 0 else "📉"
+                text += f"\n{pos['ticker']}\n"
+                text += f"  Qty: {pos['qty']}\n"
+                text += f"  Entry: ${pos['entry_price']:.2f}\n"
+                text += f"  Current: ${pos['current_price']:.2f}\n"
+                text += f"  {pnl_emoji} P&L: ${pos['pnl']:.2f} ({pos['pnl_pct']:.2f}%)\n"
+        else:
+            text += "📚 *Paper Trading*\n  Sin posiciones\n"
+        
+        # Live trading
+        if mode in [TradingMode.LIVE_TRADING, TradingMode.NO_TRADING]:
+            if self.live_broker and self.live_broker.connected:
+                try:
+                    live_portfolio = self.live_broker.get_portfolio_summary()
+                    if live_portfolio['positions']:
+                        text += "\n🔴 *Live Trading*\n"
+                        for pos in live_portfolio['positions']:
+                            pnl_emoji = "📈" if pos['pnl'] >= 0 else "📉"
+                            text += f"\n{pos['ticker']}\n"
+                            text += f"  Qty: {pos['qty']}\n"
+                            text += f"  Entry: ${pos['entry_price']:.2f}\n"
+                            text += f"  Current: ${pos['current_price']:.2f}\n"
+                            text += f"  {pnl_emoji} P&L: ${pos['pnl']:.2f} ({pos['pnl_pct']:.2f}%)\n"
+                    else:
+                        text += "\n🔴 *Live Trading*\n  Sin posiciones\n"
+                except:
+                    pass
+        
+        await update.message.reply_text(text, parse_mode="Markdown")
+    
     async def cmd_portfolio(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Comando /portfolio - Portfolio summary."""
+        """Comando /portfolio - Ver cartera."""
+        user_id = update.effective_user.id
+        mode = self.user_modes.get(user_id, TradingMode.NO_TRADING)
+        
+        text = "📊 *Portfolio Summary*\n\n"
+        
+        # Paper
+        paper = self.paper_engine.get_portfolio_summary()
+        text += f"📚 *Paper Trading*\n"
+        text += f"  💰 Cash: ${paper['cash']:,.2f}\n"
+        text += f"  📈 Posiciones: ${paper['positions_value']:,.2f}\n"
+        text += f"  💵 Total: ${paper['total_value']:,.2f}\n"
+        text += f"  📊 Return: {paper['return_pct']:.2f}%\n"
+        
+        # Live
+        if mode in [TradingMode.LIVE_TRADING, TradingMode.NO_TRADING]:
+            if self.live_broker and self.live_broker.connected:
+                try:
+                    live = self.live_broker.get_portfolio_summary()
+                    text += f"\n🔴 *Live Trading*\n"
+                    text += f"  💰 Cash: ${live['cash']:,.2f}\n"
+                    text += f"  📈 Posiciones: ${live['positions_value']:,.2f}\n"
+                    text += f"  💵 Total: ${live['total_value']:,.2f}\n"
+                except:
+                    pass
+        
+        await update.message.reply_text(text, parse_mode="Markdown")
+    
+    async def cmd_buy(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Comando /buy TICKER QTY - Comprar."""
+        user_id = update.effective_user.id
+        mode = self.user_modes.get(user_id, TradingMode.NO_TRADING)
+        
+        if mode == TradingMode.NO_TRADING:
+            await update.message.reply_text(
+                "❌ Primero selecciona modo:\n/paper_trading o /live_trading"
+            )
+            return
+        
         try:
-            summary = self.engine.get_portfolio_summary()
-
-            message = f"""
-💰 Portfolio summary:
-
-Total value: ${summary['total_value']:,.2f}
-Cash: ${summary['cash']:,.2f}
-Positions: ${summary['positions_value']:,.2f}
-
-Return: {summary['return_pct']:+.2f}%
-Fees paid: ${summary['total_transaction_costs']:,.2f}
-
-Regime: {self.engine.get_regime()}
-Paused: {'🛑 YES' if summary['trading_paused'] else '✅ NO'}
-            """
-            await update.message.reply_text(message)
-
-        except Exception as e:
-            logger.error(f"Error in /portfolio: {e}")
-            await update.message.reply_text(f"❌ Error: {e}")
-
-    async def cmd_analysis(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Comando /analysis - View available analysis."""
-        try:
-            fundamentals = self.engine.state["fundamental_analyses"]
-            sentiments = self.engine.state["sentiment_analyses"]
-
-            if not fundamentals and not sentiments:
-                await update.message.reply_text("📭 No analysis available yet")
+            args = context.args
+            if len(args) < 2:
+                await update.message.reply_text("Uso: /buy TICKER CANTIDAD")
                 return
-
-            message = "📊 Available analysis:\n\n"
-
-            if fundamentals:
-                message += "Fundamental:\n"
-                for ticker, entry in fundamentals.items():
-                    score = entry.get("score", "?")
-                    message += f"  • {ticker}: {score}/10\n"
-
-            if sentiments:
-                message += "\nSentiment:\n"
-                for ticker, entry in sentiments.items():
-                    sentiment = entry["data"].get("sentimiento", "?")
-                    message += f"  • {ticker}: {sentiment}\n"
-
-            await update.message.reply_text(message)
-
+            
+            ticker = args[0].upper()
+            quantity = int(args[1])
+            
+            if mode == TradingMode.PAPER_TRADING:
+                price = self.paper_engine.get_current_price(ticker)
+                if price:
+                    text = f"🛒 *Confirmar compra*\n\n"
+                    text += f"Ticker: {ticker}\n"
+                    text += f"Cantidad: {quantity}\n"
+                    text += f"Precio: ${price:.2f}\n"
+                    text += f"Total: ${price * quantity:,.2f}\n\n"
+                    text += "¿Confirmar?"
+                    
+                    # Botones de confirmación
+                    keyboard = [
+                        [
+                            InlineKeyboardButton("✅ Confirmar", callback_data=f"buy_paper_{ticker}_{quantity}"),
+                            InlineKeyboardButton("❌ Cancelar", callback_data="cancel")
+                        ]
+                    ]
+                    
+                    await update.message.reply_text(
+                        text,
+                        reply_markup=InlineKeyboardMarkup(keyboard),
+                        parse_mode="Markdown"
+                    )
+            
+            elif mode == TradingMode.LIVE_TRADING:
+                price = self.live_broker.get_current_price(ticker)
+                if price:
+                    text = f"🔴 *COMPRA EN VIVO - DINERO REAL*\n\n"
+                    text += f"Ticker: {ticker}\n"
+                    text += f"Cantidad: {quantity}\n"
+                    text += f"Precio: ${price:.2f}\n"
+                    text += f"Total: ${price * quantity:,.2f}\n\n"
+                    text += "⚠️ ESTA OPERACIÓN USARÁ DINERO REAL\n"
+                    text += "¿Confirmar?"
+                    
+                    keyboard = [
+                        [
+                            InlineKeyboardButton("✅ CONFIRMAR", callback_data=f"buy_live_{ticker}_{quantity}"),
+                            InlineKeyboardButton("❌ Cancelar", callback_data="cancel")
+                        ]
+                    ]
+                    
+                    await update.message.reply_text(
+                        text,
+                        reply_markup=InlineKeyboardMarkup(keyboard),
+                        parse_mode="Markdown"
+                    )
+        
         except Exception as e:
-            logger.error(f"Error in /analysis: {e}")
-            await update.message.reply_text(f"❌ Error: {e}")
-
+            logger.error(f"Error en /buy: {e}")
+            await update.message.reply_text(f"❌ Error: {str(e)}")
+    
+    async def cmd_sell(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Comando /sell TICKER QTY - Vender."""
+        user_id = update.effective_user.id
+        mode = self.user_modes.get(user_id, TradingMode.NO_TRADING)
+        
+        if mode == TradingMode.NO_TRADING:
+            await update.message.reply_text(
+                "❌ Primero selecciona modo:\n/paper_trading o /live_trading"
+            )
+            return
+        
+        # Implementación similar a /buy pero para SELL
+        await update.message.reply_text("Comando /sell - en desarrollo")
+    
+    async def cmd_back(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Comando /back - Volver a /no_trading."""
+        await self.cmd_no_trading(update, context)
+    
+    async def cmd_fundamental(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Comando /fundamental - Análisis fundamental (compartido)."""
+        await update.message.reply_text("Análisis fundamental - en desarrollo")
+    
+    async def cmd_sentiment(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Comando /sentiment - Análisis sentimiento (compartido)."""
+        await update.message.reply_text("Análisis sentimiento - en desarrollo")
+    
+    async def cmd_technical(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Comando /technical - Análisis técnico (específico del modo)."""
+        await update.message.reply_text("Análisis técnico - en desarrollo")
+    
     async def cmd_help(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Comando /help."""
-        await self.cmd_start(update, context)
+        """Comando /help - Mostrar ayuda."""
+        text = """
+🤖 *Investment Swarm Bot - Comandos*
 
-    # ── Callbacks de confirmación ────────────────────────────────
+*Modo:*
+/start - Estado actual
+/paper_trading - Cambiar a paper trading
+/live_trading - Cambiar a live trading
+/no_trading - Solo visualizar
+/back - Volver
 
+*Posiciones (todos los modos):*
+/positions - Ver posiciones abiertas
+/portfolio - Ver cartera completa
+
+*Operaciones (paper/live):*
+/buy TICKER QTY - Comprar
+/sell TICKER QTY - Vender
+
+*Análisis:*
+/fundamental - Análisis fundamental (compartido)
+/sentiment - Análisis sentimiento (compartido)
+/technical - Análisis técnico (específico del modo)
+
+*Otros:*
+/help - Este mensaje
+"""
+        
+        await update.message.reply_text(text, parse_mode="Markdown")
+    
     async def button_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Maneja botones de confirmación/rechazo."""
+        """Callback para botones inline."""
         query = update.callback_query
+        data = query.data
+        
         await query.answer()
-
-        action = query.data
-
-        if action == "cancel_operation":
-            await query.edit_message_text("❌ Operation cancelled")
-            return
-
-        # Parsear acción
-        parts = action.split("_")
-        if len(parts) < 4:
-            await query.edit_message_text("❌ Error procesando acción")
-            return
-
-        op_type = parts[1]  # "buy" o "sell"
-        ticker = parts[2]
-        quantity = int(parts[3])
-        price = float("_".join(parts[4:]))  # Por si price tiene puntos
-
-        try:
-            if op_type == "buy":
-                result = self.engine.execute_operation_manual(
-                    ticker=ticker,
-                    action="BUY",
-                    quantity=quantity,
-                    price=price,
-                    origin=OPERATION_ORIGIN_MANUAL_TELEGRAM,
-                    note=f"Usuario confirmó via Telegram"
-                )
-            elif op_type == "sell":
-                result = self.engine.execute_operation_manual(
-                    ticker=ticker,
-                    action="SELL",
-                    quantity=quantity,
-                    price=price,
-                    origin=OPERATION_ORIGIN_MANUAL_TELEGRAM,
-                    note=f"Usuario confirmó via Telegram"
-                )
-            else:
-                await query.edit_message_text("❌ Tipo de operación desconocido")
-                return
-
+        
+        if data == "cancel":
+            await query.edit_message_text("❌ Operación cancelada")
+        
+        elif data.startswith("buy_paper_"):
+            # Parsear: buy_paper_MSFT_10
+            parts = data.split("_")
+            ticker = parts[2]
+            quantity = int(parts[3])
+            
+            # Ejecutar compra
+            price = self.paper_engine.get_current_price(ticker)
+            result = self.paper_engine.execute_operation_manual(
+                ticker=ticker,
+                action="BUY",
+                quantity=quantity,
+                price=price,
+                origin="MANUAL_TELEGRAM",
+                note=f"Compra vía Telegram: {quantity} {ticker}"
+            )
+            
             if result["success"]:
-                trade = result["trade"]
-                message = f"""
-✅ Operation executed:
-
-{result["message"]}
-
-Bot Opinion: {trade['bot_opinion']}
-Origin: {trade['origin']}
-                """
-                await query.edit_message_text(message)
+                await query.edit_message_text(f"✅ {result['message']}")
             else:
                 await query.edit_message_text(f"❌ {result['message']}")
-
-        except Exception as e:
-            logger.error(f"Error en callback: {e}")
-            await query.edit_message_text(f"❌ Error: {e}")
-
-    # ── Notificaciones desde scheduler ───────────────────────────
-
-    async def notify_trade_opportunity(
-        self, ticker: str, action: str, fundamental: Dict,
-        technical: Dict, sentiment: Dict, operation_id: str
-    ) -> None:
-        """
-        Notifica una oportunidad de compra automática.
-        Espera confirmación del usuario durante 2h.
-
-        Args:
-            ticker: El ticker (MSFT, GOOG, etc.)
-            action: "BUY" o "SELL"
-            fundamental: Análisis fundamental
-            technical: Análisis técnico
-            sentiment: Análisis de sentimiento
-            operation_id: ID único para esta operación (para timeout)
-        """
-        try:
-            price = self.engine.get_current_price(ticker)
-            if not price:
-                logger.warning(f"Could not get price for {ticker}")
-                return
-
-            regime = self.engine.get_regime()
-
-            message = f"""
-🔔 Trading opportunity {action}:
-
-Ticker: {ticker}
-Price: ${price:.2f}
-Regime: {regime}
-
-📊 Analysis:
-  Fundamental: {fundamental.get("score", "?")}/10 ({fundamental.get("recommendation")})
-  Technical: {technical.get("señal")}
-  Sentiment: {sentiment.get("sentimiento")}
-
-⏰ You have 2 hours to respond (will execute automatically otherwise)
-            """
-
-            # Crear botones de confirmación
-            keyboard = [
-                [
-                    InlineKeyboardButton("✅ Confirm", callback_data=f"auto_{action.lower()}_{ticker}_{operation_id}"),
-                    InlineKeyboardButton("❌ Reject", callback_data=f"reject_{operation_id}"),
-                ]
-            ]
-            reply_markup = InlineKeyboardMarkup(keyboard)
-
-            # Guardar operación pendiente
-            self.pending_operations[operation_id] = {
-                "ticker": ticker,
-                "action": action,
-                "price": price,
-                "created_at": datetime.now().isoformat(),
-                "timeout_at": (datetime.now() + timedelta(seconds=OPERATION_TIMEOUT_SECONDS)).isoformat(),
-                "fundamental": fundamental,
-                "technical": technical,
-                "sentiment": sentiment,
-                "confirmed": False,
-                "rejected": False,
-            }
-            self._save_pending_operations()
-
-            # Enviar notificación
-            if self.app:
-                await self.app.bot.send_message(
-                    chat_id=self.chat_id,
-                    text=message,
-                    reply_markup=reply_markup
-                )
-
-        except Exception as e:
-            logger.error(f"Error sending notification: {e}")
-
-    async def process_pending_operations(self) -> None:
-        """
-        Procesa operaciones pendientes que pasaron el timeout de 2h.
-        Si el usuario no respondió, las ejecuta automáticamente (si sigue siendo válido).
-        """
-        now = datetime.now()
-
-        for op_id, op_data in list(self.pending_operations.items()):
-            timeout_at = datetime.fromisoformat(op_data["timeout_at"])
-
-            if now > timeout_at and not op_data["confirmed"] and not op_data["rejected"]:
-                # Pasó el timeout sin respuesta
-                ticker = op_data["ticker"]
-                action = op_data["action"]
-
-                # Reanalizar
-                fundamental = op_data["fundamental"]
-                technical = self.engine.get_technical(ticker)
-                sentiment = op_data["sentiment"]
-
-                # Revalidar con decision engine
-                decision = self.engine.decision_engine.evaluate_buy_opportunity_new(
-                    ticker, fundamental, technical, sentiment
-                )
-
-                if decision.get("decision") == "BUY_CANDIDATE":
-                    # Aún es válido → ejecutar automáticamente
-                    price = self.engine.get_current_price(ticker)
-                    if price:
-                        quantity = max(1, int(self.engine.state["cash"] * 0.1 / price))
-                        result = self.engine.execute_operation_manual(
-                            ticker=ticker,
-                            action=action,
-                            quantity=quantity,
-                            price=price,
-                            origin="AUTO",
-                            note=f"Ejecutada automáticamente después de timeout (sin respuesta user)"
-                        )
-
-                        if self.app:
-                            message = f"✅ Executed automatically:\n{result['message']}"
-                            await self.app.bot.send_message(chat_id=self.chat_id, text=message)
-
-                        op_data["executed"] = True
-                else:
-                    # Ya no es válido → rechazar
-                    op_data["rejected"] = True
-                    if self.app:
-                        message = f"⏰ Timeout: {action} opportunity for {ticker} is no longer valid"
-                        await self.app.bot.send_message(chat_id=self.chat_id, text=message)
-
-                self._save_pending_operations()
-
-    # ── Inicialización del bot ───────────────────────────────────
-
-    def setup_handlers(self, application: Application) -> None:
-        """Registra todos los handlers de comandos."""
-        application.add_handler(CommandHandler("start", self.cmd_start))
-        application.add_handler(CommandHandler("buy", self.cmd_buy))
-        application.add_handler(CommandHandler("sell", self.cmd_sell))
-        application.add_handler(CommandHandler("positions", self.cmd_positions))
-        application.add_handler(CommandHandler("portfolio", self.cmd_portfolio))
-        application.add_handler(CommandHandler("analysis", self.cmd_analysis))
-        application.add_handler(CommandHandler("help", self.cmd_help))
-        application.add_handler(CallbackQueryHandler(self.button_callback))
-
-    async def run(self) -> None:
-        """Inicia el bot."""
-        self.app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
-        self.setup_handlers(self.app)
-
-        logger.info("🤖 Bot started. Waiting for commands...")
-        await self.app.run_polling()
-
-
-# ── Main ──────────────────────────────────────────────────────
-
-def main():
-    """Función principal."""
-    engine = PaperTradingEngine(initial_capital=5000.0)
-    bot = TelegramTradingBot(engine, chat_id=TELEGRAM_CHAT_ID)
+        
+        elif data.startswith("buy_live_"):
+            # Parsear: buy_live_MSFT_10
+            parts = data.split("_")
+            ticker = parts[2]
+            quantity = int(parts[3])
+            
+            # Ejecutar compra en live
+            result = self.live_broker.place_order(
+                ticker=ticker,
+                action="BUY",
+                quantity=quantity,
+                order_type="MARKET"
+            )
+            
+            if result["success"]:
+                await query.edit_message_text(f"✅ 🔴 ORDEN EJECUTADA\n\n{result['message']}")
+            else:
+                await query.edit_message_text(f"❌ {result['message']}")
     
-    # Crear aplicación directamente
-    app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
-    bot.app = app
-    bot.setup_handlers(app)
-
-    logger.info("🤖 Bot started. Waiting for commands...")
-    app.run_polling()
-
-
-if __name__ == "__main__":
-    main()
+    def _format_mode(self, mode: TradingMode) -> str:
+        """Formatea el modo para mostrar."""
+        modes = {
+            TradingMode.NO_TRADING: "👁️ Visualización",
+            TradingMode.PAPER_TRADING: "📚 Paper Trading",
+            TradingMode.LIVE_TRADING: "🔴 Live Trading",
+        }
+        return modes.get(mode, "Desconocido")
+    
+    async def start_polling(self) -> None:
+        """Inicia el bot en polling mode."""
+        await self.app.initialize()
+        await self.app.start()
+        await self.app.updater.start_polling()
+        logger.info("Bot iniciado en polling mode")
+    
+    async def stop(self) -> None:
+        """Detiene el bot."""
+        await self.app.updater.stop()
+        await self.app.stop()
+        await self.app.shutdown()
+        logger.info("Bot detenido")
