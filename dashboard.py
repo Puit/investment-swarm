@@ -1,23 +1,12 @@
 """
-DASHBOARD - PAPER TRADING
-==========================
+DASHBOARD - PAPER TRADING (MEJORADO - PASO 3)
+==============================================
 
-Interfaz Streamlit con 3 secciones:
-
-1. 💰 Paper Trading
-   - Resumen de cartera (cash, valor, P&L, régimen actual)
-   - Gestión de la watchlist (añadir/quitar tickers)
-   - Botones: "Escanear" (modo auto) e "Invertir ahora" (modo invest_now)
-   - Tabla de posiciones abiertas
-   - Histórico de operaciones
-
-2. 📊 Análisis Fundamental
-   - Pedir análisis de un ticker nuevo
-   - Listado de tickers ya analizados (score, fecha, antigüedad)
-   - Ver informe completo + botón "Renovar"
-
-3. 📰 Análisis de Sentimiento
-   - Igual que el fundamental, pero para sentimiento de mercado
+Mejoras agregadas:
+1. Operaciones manuales (compra/venta con inputs de cantidad)
+2. Columnas de origin (AUTO / MANUAL_TELEGRAM / MANUAL_DASHBOARD)
+3. Columnas de bot_opinion (SÍ / NO)
+4. Coloreo visual según tipo de operación
 
 Ejecutar con:  streamlit run dashboard.py
 """
@@ -28,6 +17,8 @@ from datetime import datetime
 
 from paper_trading_engine import (
     PaperTradingEngine,
+    OPERATION_ORIGIN_AUTO,
+    OPERATION_ORIGIN_MANUAL_DASHBOARD,
     FUNDAMENTAL_CACHE_DAYS,
     SENTIMENT_CACHE_HOURS,
 )
@@ -75,6 +66,25 @@ def regime_badge(regime: str) -> str:
         "BEARISH": "🔴 BAJISTA",
     }
     return icons.get(regime, regime)
+
+
+def origin_badge(origin: str) -> str:
+    """Muestra badge con icono según origen de operación."""
+    badges = {
+        OPERATION_ORIGIN_AUTO: "🤖 AUTO",
+        OPERATION_ORIGIN_MANUAL_DASHBOARD: "👤 DASHBOARD",
+        "MANUAL_TELEGRAM": "💬 TELEGRAM",
+    }
+    return badges.get(origin, origin)
+
+
+def bot_opinion_badge(opinion: str) -> str:
+    """Muestra badge con color según opinión del bot."""
+    if opinion == "SÍ":
+        return "✅ SÍ"
+    elif opinion == "NO":
+        return "❌ NO"
+    return opinion
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -174,8 +184,8 @@ with tab_trading:
 
     st.divider()
 
-    # ── Acciones de trading ──
-    st.subheader("Acciones")
+    # ── Acciones de trading automático ──
+    st.subheader("Acciones automáticas")
 
     col1, col2 = st.columns(2)
     with col1:
@@ -183,7 +193,7 @@ with tab_trading:
         st.caption(
             "Revisa stop loss / take profit en posiciones abiertas y solo "
             "abre nuevas posiciones si hay señal técnica + fundamental + "
-            "sentimiento favorable (igual que en producción)."
+            "sentimiento favorable."
         )
         if st.button("Escanear ahora", use_container_width=True, disabled=not watchlist):
             with st.spinner("Analizando watchlist..."):
@@ -196,8 +206,7 @@ with tab_trading:
         st.caption(
             "Revisa salidas igual que el modo automático, pero además "
             "reparte el cash disponible AHORA entre los tickers de la "
-            "watchlist sin posición abierta, a precio de mercado, sin "
-            "esperar una señal técnica de entrada óptima."
+            "watchlist sin posición abierta."
         )
         if st.button("Invertir ahora", type="primary", use_container_width=True, disabled=not watchlist):
             with st.spinner("Ejecutando..."):
@@ -235,6 +244,77 @@ with tab_trading:
 
     st.divider()
 
+    # ── OPERACIONES MANUALES (NUEVO - PASO 3) ──
+    st.subheader("Operaciones manuales")
+
+    col_buy, col_sell = st.columns(2)
+
+    # Compra manual
+    with col_buy:
+        st.markdown("#### 🛒 Compra manual")
+        buy_ticker = st.selectbox("Ticker a comprar", options=watchlist if watchlist else ["—"], key="buy_ticker", label_visibility="collapsed")
+        buy_qty = st.number_input("Cantidad", min_value=1, value=10, step=1, key="buy_qty")
+
+        if st.button("💰 Comprar", type="primary", use_container_width=True, disabled=(buy_ticker == "—")):
+            try:
+                price = engine.get_current_price(buy_ticker)
+                if not price:
+                    st.error(f"No se pudo obtener precio para {buy_ticker}")
+                else:
+                    result = engine.execute_operation_manual(
+                        ticker=buy_ticker,
+                        action="BUY",
+                        quantity=buy_qty,
+                        price=price,
+                        origin=OPERATION_ORIGIN_MANUAL_DASHBOARD,
+                        note=f"Compra manual desde dashboard: {buy_qty} acciones"
+                    )
+
+                    if result["success"]:
+                        st.success(result["message"])
+                        st.rerun()
+                    else:
+                        st.error(result["message"])
+            except Exception as e:
+                st.error(f"Error: {e}")
+
+    # Venta manual
+    with col_sell:
+        st.markdown("#### 📊 Venta manual")
+        positions = list(engine.state["positions"].keys())
+        sell_ticker = st.selectbox("Ticker a vender", options=positions if positions else ["—"], key="sell_ticker", label_visibility="collapsed")
+
+        max_qty = 0
+        if sell_ticker != "—" and sell_ticker in engine.state["positions"]:
+            max_qty = sum(lot["qty"] for lot in engine.state["positions"][sell_ticker])
+
+        sell_qty = st.number_input("Cantidad", min_value=1, max_value=max(1, max_qty), value=min(10, max_qty) if max_qty > 0 else 1, step=1, key="sell_qty")
+
+        if st.button("💵 Vender", type="primary", use_container_width=True, disabled=(sell_ticker == "—")):
+            try:
+                price = engine.get_current_price(sell_ticker)
+                if not price:
+                    st.error(f"No se pudo obtener precio para {sell_ticker}")
+                else:
+                    result = engine.execute_operation_manual(
+                        ticker=sell_ticker,
+                        action="SELL",
+                        quantity=sell_qty,
+                        price=price,
+                        origin=OPERATION_ORIGIN_MANUAL_DASHBOARD,
+                        note=f"Venta manual desde dashboard: {sell_qty} acciones"
+                    )
+
+                    if result["success"]:
+                        st.success(result["message"])
+                        st.rerun()
+                    else:
+                        st.error(result["message"])
+            except Exception as e:
+                st.error(f"Error: {e}")
+
+    st.divider()
+
     # ── Posiciones abiertas ──
     st.subheader("Posiciones abiertas")
 
@@ -248,41 +328,76 @@ with tab_trading:
                 "Cantidad": p["qty"],
                 "Precio entrada": fmt_money(p["entry_price"]),
                 "Precio actual": fmt_money(p["current_price"]) if p["current_price"] else "—",
-                "Valor": fmt_money(p["value"]),
-                "P&L": fmt_money(p["pnl"]),
-                "P&L %": fmt_pct(p["pnl_pct"]),
-                "Convicción": p["conviction"],
-                "Régimen entrada": p["entry_regime"],
+                "P&L": fmt_money(p["pnl"]) if "pnl" in p else "—",
+                "% P&L": fmt_pct(p["pnl_pct"]) if "pnl_pct" in p else "—",
             })
-        st.dataframe(pd.DataFrame(pos_rows), use_container_width=True, hide_index=True)
+
+        df_pos = pd.DataFrame(pos_rows)
+        st.dataframe(df_pos, use_container_width=True, hide_index=True)
 
     st.divider()
 
-    # ── Histórico de operaciones ──
+    # ── Histórico de operaciones (MEJORADO - PASO 3) ──
     st.subheader("Histórico de operaciones")
 
-    history = engine.state["trade_history"]
-    if not history:
-        st.info("Sin operaciones todavía.")
+    if not engine.state["trade_history"]:
+        st.info("Sin operaciones aún.")
     else:
-        hist_rows = []
-        for t in reversed(history[-50:]):  # últimas 50, más recientes primero
-            hist_rows.append({
-                "Fecha": datetime.fromisoformat(t["date"]).strftime("%Y-%m-%d %H:%M"),
-                "Ticker": t["ticker"],
-                "Acción": t["action"],
-                "Cantidad": t["quantity"],
-                "Precio": fmt_money(t["price"]),
-                "Importe": fmt_money(t["amount"]),
-                "Comisión": fmt_money(t.get("fee", 0)),
-                "P&L": fmt_money(t["pnl"]) if "pnl" in t else "—",
-                "Motivo / Convicción": t.get("reason") or t.get("conviction", "—"),
-                "Régimen": t.get("regime", "—"),
-            })
-        st.dataframe(pd.DataFrame(hist_rows), use_container_width=True, hide_index=True)
+        # Preparar datos del histórico con NUEVAS columnas
+        history_rows = []
+        for trade in engine.state["trade_history"][-50:]:  # Últimas 50
+            action = trade.get("action", "?")
+            action_icon = "🟢" if action == "BUY" else "🔴"
 
-        total_costs = summary["total_transaction_costs"]
-        st.caption(f"💸 Comisiones totales pagadas: {fmt_money(total_costs)}")
+            origin = trade.get("origin", "?")
+            bot_opinion = trade.get("bot_opinion", "?")
+
+            history_rows.append({
+                "Fecha": fmt_ago(trade.get("date", "")),
+                "Acción": action_icon + " " + action,
+                "Ticker": trade.get("ticker", "?"),
+                "Cantidad": trade.get("quantity", 0),
+                "Precio": fmt_money(trade.get("price", 0)),
+                "Importe": fmt_money(trade.get("amount", 0)),
+                "Comisión": fmt_money(trade.get("fee", 0)),
+                "Origin": origin_badge(origin),
+                "Bot Opinion": bot_opinion_badge(bot_opinion),
+                "P&L": fmt_money(trade.get("pnl", 0)) if "pnl" in trade else "—",
+                "Razón": trade.get("reason", "Manual") if action == "SELL" else trade.get("conviction", "—"),
+            })
+
+        df_history = pd.DataFrame(history_rows)
+        st.dataframe(df_history, use_container_width=True, hide_index=True)
+
+        # Resumen de operaciones por tipo
+        st.markdown("#### 📊 Resumen por origen")
+        origin_counts = {}
+        for trade in engine.state["trade_history"]:
+            origin = trade.get("origin", "UNKNOWN")
+            origin_counts[origin] = origin_counts.get(origin, 0) + 1
+
+        res_rows = []
+        for origin, count in origin_counts.items():
+            res_rows.append({"Origin": origin_badge(origin), "Cantidad": count})
+
+        if res_rows:
+            df_res = pd.DataFrame(res_rows)
+            st.dataframe(df_res, use_container_width=True, hide_index=True)
+
+        # Resumen de bot_opinion
+        st.markdown("#### 🤖 Análisis: Bot opinion")
+        opinion_counts = {}
+        for trade in engine.state["trade_history"]:
+            opinion = trade.get("bot_opinion", "?")
+            opinion_counts[opinion] = opinion_counts.get(opinion, 0) + 1
+
+        opinion_rows = []
+        for opinion, count in opinion_counts.items():
+            opinion_rows.append({"Opinion": bot_opinion_badge(opinion), "Cantidad": count})
+
+        if opinion_rows:
+            df_opinion = pd.DataFrame(opinion_rows)
+            st.dataframe(df_opinion, use_container_width=True, hide_index=True)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -290,59 +405,56 @@ with tab_trading:
 # ─────────────────────────────────────────────────────────────
 
 with tab_fundamental:
-    st.subheader("Solicitar nuevo análisis")
+    st.subheader("Análisis Fundamental (on-demand)")
 
-    col1, col2 = st.columns([3, 1])
-    with col1:
-        fund_ticker_input = st.text_input(
-            "Ticker", key="fund_ticker_input", label_visibility="collapsed",
-            placeholder="Ej: NVDA",
-        )
-    with col2:
-        fund_analyze_clicked = st.button("📊 Analizar", use_container_width=True, key="fund_analyze_btn")
+    col_f1, col_f2 = st.columns([3, 1])
+    with col_f1:
+        fund_ticker = st.text_input("Ticker para análisis fundamental", placeholder="Ej: MSFT", label_visibility="collapsed", key="fund_ticker_input")
+    with col_f2:
+        if st.button("🔍 Analizar", use_container_width=True, key="btn_analyze_fundamental"):
+            if fund_ticker.strip():
+                with st.spinner(f"Analizando {fund_ticker}..."):
+                    engine.run_fundamental_analysis(fund_ticker.upper(), force=False)
+                st.rerun()
 
-    if fund_analyze_clicked and fund_ticker_input.strip():
-        with st.spinner(f"Ejecutando análisis fundamental de {fund_ticker_input.upper()}... (puede tardar 1-2 min)"):
-            engine.run_fundamental_analysis(fund_ticker_input, force=False)
-        st.rerun()
+    # Listado de análisis disponibles
+    if engine.state["fundamental_analyses"]:
+        st.markdown("#### 📋 Análisis disponibles")
 
-    st.divider()
-    st.subheader("Análisis disponibles")
+        fund_rows = []
+        for ticker, entry in engine.state["fundamental_analyses"].items():
+            data = entry.get("data", {})
+            score = data.get("score", "?")
+            timestamp = entry.get("timestamp", "")
+            ago = fmt_ago(timestamp) if timestamp else "—"
 
-    fundamentals = engine.state["fundamental_analyses"]
+            fund_rows.append({
+                "Ticker": ticker,
+                "Score": f"{score}/10",
+                "Recomendación": data.get("recommendation", "?"),
+                "Confianza": data.get("confidence", "?"),
+                "Antigüedad": ago,
+            })
 
-    if not fundamentals:
-        st.info("Todavía no se ha analizado ningún ticker.")
-    else:
-        for ticker, entry in sorted(fundamentals.items()):
-            data = entry["data"]
-            stale = engine.is_fundamental_stale(ticker)
-            score = entry.get("score", data.get("score"))
+        df_fund = pd.DataFrame(fund_rows)
+        st.dataframe(df_fund, use_container_width=True, hide_index=True)
 
-            header = f"{ticker} — Score: {score}/10 — {fmt_ago(entry['timestamp'])}"
-            if stale:
-                header += f" ⚠️ (caché > {FUNDAMENTAL_CACHE_DAYS} días)"
+        # Expandibles con detalles
+        for ticker, entry in engine.state["fundamental_analyses"].items():
+            data = entry.get("data", {})
+            with st.expander(f"📄 {ticker} - Detalles"):
+                st.markdown(f"**Score:** {data.get('score', '?')}/10")
+                st.markdown(f"**Recomendación:** {data.get('recommendation', '?')}")
+                st.markdown(f"**Confianza:** {data.get('confidence', '?')}")
+                st.markdown(f"**Risk Level:** {data.get('risk_level', '?')}")
+                st.markdown(f"**Summary:**\n{data.get('summary', '?')}")
 
-            with st.expander(header):
-                col_a, col_b, col_c = st.columns(3)
-                col_a.metric("Score", f"{score}/10")
-                col_b.metric("Confianza", f"{data.get('confidence', '?')}%")
-                col_c.metric("Recomendación", data.get("recommendation", "—"))
-
-                if data.get("risk_level"):
-                    st.write(f"**Nivel de riesgo:** {data['risk_level']}")
-
-                st.write(f"**Resumen:** {data.get('summary', '—')}")
-
-                if data.get("error"):
-                    st.error(f"Error en el análisis: {data['error']}")
-
-                st.caption(f"Analizado el {datetime.fromisoformat(entry['timestamp']).strftime('%Y-%m-%d %H:%M')}")
-
-                if st.button("🔄 Renovar análisis", key=f"renew_fund_{ticker}"):
-                    with st.spinner(f"Renovando análisis fundamental de {ticker}..."):
-                        engine.run_fundamental_analysis(ticker, force=True)
-                    st.rerun()
+                col_refresh, col_force = st.columns(2)
+                with col_refresh:
+                    if st.button(f"🔄 Renovar {ticker}", use_container_width=True, key=f"btn_refresh_fund_{ticker}"):
+                        with st.spinner(f"Renoando análisis de {ticker}..."):
+                            engine.run_fundamental_analysis(ticker.upper(), force=True)
+                        st.rerun()
 
 
 # ─────────────────────────────────────────────────────────────
@@ -350,75 +462,52 @@ with tab_fundamental:
 # ─────────────────────────────────────────────────────────────
 
 with tab_sentiment:
-    st.subheader("Solicitar nuevo análisis")
+    st.subheader("Análisis de Sentimiento (on-demand)")
 
-    col1, col2 = st.columns([3, 1])
-    with col1:
-        sent_ticker_input = st.text_input(
-            "Ticker", key="sent_ticker_input", label_visibility="collapsed",
-            placeholder="Ej: NVDA",
-        )
-    with col2:
-        sent_analyze_clicked = st.button("📰 Analizar", use_container_width=True, key="sent_analyze_btn")
+    col_s1, col_s2 = st.columns([3, 1])
+    with col_s1:
+        sent_ticker = st.text_input("Ticker para análisis de sentimiento", placeholder="Ej: MSFT", label_visibility="collapsed", key="sent_ticker_input")
+    with col_s2:
+        if st.button("🔍 Analizar", use_container_width=True, key="btn_analyze_sentiment"):
+            if sent_ticker.strip():
+                with st.spinner(f"Analizando {sent_ticker}..."):
+                    engine.run_sentiment_analysis(sent_ticker.upper(), force=False)
+                st.rerun()
 
-    if sent_analyze_clicked and sent_ticker_input.strip():
-        with st.spinner(f"Ejecutando análisis de sentimiento de {sent_ticker_input.upper()}... (puede tardar 1-2 min)"):
-            result = engine.run_sentiment_analysis(sent_ticker_input, force=False)
-        if result["data"].get("error") == "module_not_found":
-            st.error(result["data"]["resumen"])
-        else:
-            st.rerun()
+    # Listado de análisis disponibles
+    if engine.state["sentiment_analyses"]:
+        st.markdown("#### 📋 Análisis disponibles")
 
-    st.divider()
-    st.subheader("Análisis disponibles")
+        sent_rows = []
+        for ticker, entry in engine.state["sentiment_analyses"].items():
+            data = entry.get("data", {})
+            sentimiento = data.get("sentimiento", "?")
+            timestamp = entry.get("timestamp", "")
+            ago = fmt_ago(timestamp) if timestamp else "—"
 
-    sentiments = engine.state["sentiment_analyses"]
+            sent_rows.append({
+                "Ticker": ticker,
+                "Sentimiento": sentimiento,
+                "Confianza": data.get("confianza", "?"),
+                "Antigüedad": ago,
+            })
 
-    if not sentiments:
-        st.info("Todavía no se ha analizado ningún ticker.")
-    else:
-        sentiment_icons = {"POSITIVO": "🟢", "NEUTRO": "🟡", "NEGATIVO": "🔴"}
+        df_sent = pd.DataFrame(sent_rows)
+        st.dataframe(df_sent, use_container_width=True, hide_index=True)
 
-        for ticker, entry in sorted(sentiments.items()):
-            data = entry["data"]
-            stale = engine.is_sentiment_stale(ticker)
-            icon = sentiment_icons.get(data.get("sentimiento"), "⚪")
+        # Expandibles con detalles
+        for ticker, entry in engine.state["sentiment_analyses"].items():
+            data = entry.get("data", {})
+            with st.expander(f"📄 {ticker} - Detalles"):
+                st.markdown(f"**Sentimiento:** {data.get('sentimiento', '?')}")
+                st.markdown(f"**Confianza:** {data.get('confianza', '?')}")
+                st.markdown(f"**Catalizadores:** {data.get('catalizadores', '?')}")
+                st.markdown(f"**Red Flags:** {data.get('red_flags', '?')}")
+                st.markdown(f"**Noticias clave:**\n{data.get('noticias_clave', '?')}")
 
-            header = f"{ticker} — {icon} {data.get('sentimiento', '—')} — {fmt_ago(entry['timestamp'])}"
-            if stale:
-                header += f" ⚠️ (caché > {SENTIMENT_CACHE_HOURS}h)"
-
-            with st.expander(header):
-                st.metric("Confianza", f"{data.get('confianza', '?')}%")
-
-                if data.get("catalizadores_positivos"):
-                    st.markdown("**Catalizadores positivos:**")
-                    for c in data["catalizadores_positivos"]:
-                        st.write(f"- {c}")
-
-                if data.get("catalizadores_negativos"):
-                    st.markdown("**Catalizadores negativos:**")
-                    for c in data["catalizadores_negativos"]:
-                        st.write(f"- {c}")
-
-                if data.get("red_flags"):
-                    st.markdown("**🚩 Red flags:**")
-                    for f in data["red_flags"]:
-                        st.write(f"- {f}")
-
-                if data.get("noticias_clave"):
-                    st.markdown("**Noticias clave:**")
-                    for n in data["noticias_clave"]:
-                        st.write(f"- {n}")
-
-                st.write(f"**Resumen:** {data.get('resumen', '—')}")
-
-                if data.get("error"):
-                    st.error(f"Error en el análisis: {data['error']}")
-
-                st.caption(f"Analizado el {datetime.fromisoformat(entry['timestamp']).strftime('%Y-%m-%d %H:%M')}")
-
-                if st.button("🔄 Renovar análisis", key=f"renew_sent_{ticker}"):
-                    with st.spinner(f"Renovando análisis de sentimiento de {ticker}..."):
-                        engine.run_sentiment_analysis(ticker, force=True)
-                    st.rerun()
+                col_refresh, col_force = st.columns(2)
+                with col_refresh:
+                    if st.button(f"🔄 Renovar {ticker}", use_container_width=True, key=f"btn_refresh_sent_{ticker}"):
+                        with st.spinner(f"Renovando análisis de {ticker}..."):
+                            engine.run_sentiment_analysis(ticker.upper(), force=True)
+                        st.rerun()
