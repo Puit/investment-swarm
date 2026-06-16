@@ -22,7 +22,7 @@ import yfinance as yf
 
 from crewai import Crew, Task, Process
 from agents.fundamental_agent import create_fundamental_agent
-from investment_decision_engine import InvestmentDecisionEngine
+from core.investment_decision_engine import InvestmentDecisionEngine
 from config import AVAILABLE_SECTORS, SELECTED_SECTORS
 
 logging.basicConfig(level=logging.INFO)

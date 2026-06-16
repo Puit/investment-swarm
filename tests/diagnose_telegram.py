@@ -176,7 +176,7 @@ def diagnose():
     print(f"\n{Colors.BOLD}6. Paper Trading Engine...{Colors.ENDC}")
     
     try:
-        from paper_trading_engine import PaperTradingEngine
+        from trading.paper_trading_engine import PaperTradingEngine
         engine = PaperTradingEngine(initial_capital=5000.0)
         print_test("PaperTradingEngine inicializa", True)
         print_test("Estado cargado", len(engine.state) > 0, f"Keys: {len(engine.state)}")
@@ -188,7 +188,7 @@ def diagnose():
     print(f"\n{Colors.BOLD}7. Telegram Trading Bot...{Colors.ENDC}")
     
     try:
-        from telegram_bot import TelegramTradingBot
+        from bot.telegram_bot import TelegramTradingBot
         bot = TelegramTradingBot(engine, chat_id=chat_id)
         print_test("TelegramTradingBot inicializa", True)
         print_test("Tiene handlers registrados", bot.app is not None, "Listo para handlers")

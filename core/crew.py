@@ -13,9 +13,9 @@ from crewai import Crew, Task, Process
 from agents.fundamental_agent import create_fundamental_agent
 from agents.technical_agent import create_technical_agent
 from agents.sentiment_agent import create_sentiment_agent
-from broker_manager import BrokerManager
-from investment_decision_engine import InvestmentDecisionEngine
-from storage import AnalysisStorage
+from brokers.broker_manager import BrokerManager
+from core.investment_decision_engine import InvestmentDecisionEngine
+from core.storage import AnalysisStorage
 from config import (
     AVAILABLE_SECTORS,
     SELECTED_SECTORS,

@@ -29,14 +29,14 @@ else:
 # Test 2: Imports
 print("\n2️⃣ Verificando imports...")
 try:
-    from paper_trading_engine import PaperTradingEngine
+    from trading.paper_trading_engine import PaperTradingEngine
     print("  ✓ PaperTradingEngine")
 except Exception as e:
     print(f"  ✗ PaperTradingEngine: {e}")
     sys.exit(1)
 
 try:
-    from telegram_bot import TelegramTradingBotV2
+    from bot.telegram_bot import TelegramTradingBotV2
     print("  ✓ TelegramTradingBotV2")
 except Exception as e:
     print(f"  ✗ TelegramTradingBotV2: {e}")
@@ -45,7 +45,7 @@ except Exception as e:
     sys.exit(1)
 
 try:
-    from interactive_brokers_broker import InteractiveBrokersBroker
+    from brokers.interactive_brokers_broker import InteractiveBrokersBroker
     print("  ✓ InteractiveBrokersBroker")
 except Exception as e:
     print(f"  ⚠️ InteractiveBrokersBroker (opcional): {e}")

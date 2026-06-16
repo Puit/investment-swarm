@@ -9,10 +9,14 @@ Uso:
 """
 
 import os
+import sys
 import asyncio
 import logging
 from pathlib import Path
 from dotenv import load_dotenv
+
+# Agregar el directorio padre al path para imports relativos
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 # Cargar .env
 load_dotenv()
@@ -25,9 +29,9 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Imports locales
-from paper_trading_engine import PaperTradingEngine
-from telegram_bot import TelegramTradingBotV2
-from interactive_brokers_broker import InteractiveBrokersBroker
+from trading.paper_trading_engine import PaperTradingEngine
+from bot.telegram_bot import TelegramTradingBotV2
+from brokers.interactive_brokers_broker import InteractiveBrokersBroker
 
 # Credenciales
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -111,7 +115,9 @@ async def main():
         logger.info("\n\n⏹ Bot detenido por usuario")
     
     except Exception as e:
-        logger.error(f"Error: {e}")
+        logger.error(f"Error: {e}", exc_info=True)
+        import traceback
+        traceback.print_exc()
     
     finally:
         # Cleanup

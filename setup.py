@@ -47,11 +47,11 @@ def check_files():
     print_header("1️⃣ Verificando archivos")
     
     required_files = [
-        "paper_trading_engine.py",
-        "telegram_bot.py",
-        "scheduler.py",
-        "dashboard.py",
-        "investment_decision_engine.py",
+        "trading/paper_trading_engine.py",
+        "bot/telegram_bot.py",
+        "trading/scheduler.py",
+        "dashboard/dashboard.py",
+        "core/investment_decision_engine.py",
         "config_improved.py",
         "requirements.txt",
         ".env.example",
@@ -176,12 +176,12 @@ def test_imports():
     print_header("5️⃣ Probando imports")
     
     modules = [
-        "paper_trading_engine",
-        "telegram_bot",
-        "scheduler",
-        "investment_decision_engine",
+        "trading.paper_trading_engine",
+        "bot.telegram_bot",
+        "trading.scheduler",
+        "core.investment_decision_engine",
     ]
-    
+
     all_ok = True
     for module in modules:
         try:

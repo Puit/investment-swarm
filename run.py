@@ -111,11 +111,11 @@ class UnifiedLauncher:
     
     def start_telegram_bot(self):
         """Inicia Telegram Bot."""
-        print_service_starting("TELEGRAM BOT", "python telegram_bot_main.py")
-        
+        print_service_starting("TELEGRAM BOT", "python bot/telegram_bot_main.py")
+
         try:
             process = subprocess.Popen(
-                [sys.executable, "telegram_bot_main.py"],
+                [sys.executable, "bot/telegram_bot_main.py"],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
@@ -138,7 +138,7 @@ class UnifiedLauncher:
     
     def start_scheduler(self):
         """Inicia Scheduler."""
-        cmd = [sys.executable, "scheduler.py", "--time", self.scheduler_time]
+        cmd = [sys.executable, "trading/scheduler.py", "--time", self.scheduler_time]
         print_service_starting("SCHEDULER", " ".join(cmd))
         
         try:
@@ -169,7 +169,7 @@ class UnifiedLauncher:
     
     def start_dashboard(self):
         """Inicia Dashboard Streamlit."""
-        cmd = [sys.executable, "-m", "streamlit", "run", "dashboard.py"]
+        cmd = [sys.executable, "-m", "streamlit", "run", "dashboard/dashboard.py"]
         print_service_starting("DASHBOARD", " ".join(cmd))
         
         try:

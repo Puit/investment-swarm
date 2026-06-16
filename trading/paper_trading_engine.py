@@ -44,7 +44,7 @@ import yfinance as yf
 
 from crewai import Crew, Task, Process
 from agents.fundamental_agent import create_fundamental_agent
-from investment_decision_engine import InvestmentDecisionEngine
+from core.investment_decision_engine import InvestmentDecisionEngine
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("PaperTrading")

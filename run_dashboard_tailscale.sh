@@ -64,15 +64,15 @@ echo "🔗 Tu IP de Tailscale: $TAILSCALE_IP"
 echo ""
 
 # ── Verificar que el dashboard y el motor existen ──
-if [ ! -f "dashboard.py" ]; then
-    echo "❌ dashboard.py no encontrado en el directorio actual"
-    echo "   Ejecuta esto desde /home/claude o /mnt/user-data/outputs"
+if [ ! -f "dashboard/dashboard.py" ]; then
+    echo "❌ dashboard/dashboard.py no encontrado en el directorio actual"
+    echo "   Ejecuta esto desde la raíz del proyecto"
     exit 1
 fi
 
-if [ ! -f "paper_trading_engine.py" ]; then
-    echo "❌ paper_trading_engine.py no encontrado en el directorio actual"
-    echo "   Cópia ambos archivos desde /mnt/user-data/outputs"
+if [ ! -f "trading/paper_trading_engine.py" ]; then
+    echo "❌ trading/paper_trading_engine.py no encontrado en el directorio actual"
+    echo "   Ejecuta esto desde la raíz del proyecto"
     exit 1
 fi
 
@@ -110,7 +110,7 @@ echo "   nohup bash run_dashboard_tailscale.sh > dashboard.log 2>&1 &"
 echo ""
 
 # ── Lanzar Streamlit en la IP de Tailscale ──
-streamlit run dashboard.py \
+streamlit run dashboard/dashboard.py \
     --server.address="$TAILSCALE_IP" \
     --server.port=$PORT \
     --logger.level=info

@@ -24,8 +24,11 @@ from typing import Optional, Dict, Tuple
 import json
 import sys
 
-from paper_trading_engine import PaperTradingEngine
-from interactive_brokers_broker import InteractiveBrokersBroker
+# Agregar el directorio padre al path para imports relativos
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from trading.paper_trading_engine import PaperTradingEngine
+from brokers.interactive_brokers_broker import InteractiveBrokersBroker
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -368,7 +371,7 @@ o cancela con /back
 
 async def main():
     """Función principal."""
-    from paper_trading_engine import PaperTradingEngine
+    from trading.paper_trading_engine import PaperTradingEngine
     
     # Crear engine
     engine = PaperTradingEngine(initial_capital=5000.0)

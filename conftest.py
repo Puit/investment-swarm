@@ -16,9 +16,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 import pytest
-from paper_trading_engine import PaperTradingEngine
-from telegram_bot import TelegramTradingBot
-from scheduler import InvestmentScheduler
+from trading.paper_trading_engine import PaperTradingEngine
+from bot.telegram_bot import TelegramTradingBot
+from trading.scheduler import InvestmentScheduler
 
 
 @pytest.fixture

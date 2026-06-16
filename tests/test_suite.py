@@ -60,7 +60,7 @@ class TestPaperTradingEngine(unittest.TestCase):
     
     def setUp(self):
         """Inicializa antes de cada test."""
-        from paper_trading_engine import PaperTradingEngine
+        from trading.paper_trading_engine import PaperTradingEngine
         self.engine = PaperTradingEngine(initial_capital=5000.0)
     
     def test_initialization(self):
@@ -104,7 +104,7 @@ class TestPaperTradingEngine(unittest.TestCase):
         self.engine.save_state()
         
         # Crear nuevo engine
-        from paper_trading_engine import PaperTradingEngine
+        from trading.paper_trading_engine import PaperTradingEngine
         engine2 = PaperTradingEngine(initial_capital=5000.0)
         
         self.assertIn("GOOG", engine2.state["watchlist"])
@@ -119,8 +119,8 @@ class TestTelegramBot(unittest.TestCase):
     
     def setUp(self):
         """Inicializa antes de cada test."""
-        from paper_trading_engine import PaperTradingEngine
-        from telegram_bot import TelegramTradingBot
+        from trading.paper_trading_engine import PaperTradingEngine
+        from bot.telegram_bot import TelegramTradingBot
         self.engine = PaperTradingEngine(initial_capital=5000.0)
         self.bot = TelegramTradingBot(self.engine, chat_id="123456789")
     
@@ -149,9 +149,9 @@ class TestScheduler(unittest.TestCase):
     
     def setUp(self):
         """Inicializa antes de cada test."""
-        from paper_trading_engine import PaperTradingEngine
-        from telegram_bot import TelegramTradingBot
-        from scheduler import InvestmentScheduler
+        from trading.paper_trading_engine import PaperTradingEngine
+        from bot.telegram_bot import TelegramTradingBot
+        from trading.scheduler import InvestmentScheduler
         
         self.engine = PaperTradingEngine(initial_capital=5000.0)
         self.telegram_bot = TelegramTradingBot(self.engine, chat_id="123456789")
@@ -184,9 +184,9 @@ class TestIntegrations(unittest.TestCase):
     
     def setUp(self):
         """Inicializa antes de cada test."""
-        from paper_trading_engine import PaperTradingEngine
-        from telegram_bot import TelegramTradingBot
-        from scheduler import InvestmentScheduler
+        from trading.paper_trading_engine import PaperTradingEngine
+        from bot.telegram_bot import TelegramTradingBot
+        from trading.scheduler import InvestmentScheduler
         
         self.engine = PaperTradingEngine(initial_capital=5000.0)
         self.telegram_bot = TelegramTradingBot(self.engine, chat_id="123456789")

@@ -16,19 +16,24 @@ import streamlit as st
 import pandas as pd
 from datetime import datetime
 import os
+import sys
+from pathlib import Path
 from dotenv import load_dotenv
 
 # Cargar .env
 load_dotenv()
 
+# Agregar el directorio padre al path para imports relativos
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
 # Imports
-from paper_trading_engine import (
+from trading.paper_trading_engine import (
     PaperTradingEngine,
     OPERATION_ORIGIN_MANUAL_DASHBOARD,
 )
 
 try:
-    from interactive_brokers_broker import InteractiveBrokersBroker
+    from brokers.interactive_brokers_broker import InteractiveBrokersBroker
     IB_AVAILABLE = True
 except:
     IB_AVAILABLE = False
@@ -459,6 +464,6 @@ with tab5:
 st.divider()
 st.markdown("""
 ---
-**Investment Swarm Dashboard v2** | Paper + Live Trading | 
+**Investment Swarm Dashboard v2** | Paper + Live Trading |
 Powered by CrewAI + Ollama + Interactive Brokers
 """)

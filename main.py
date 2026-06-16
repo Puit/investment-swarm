@@ -8,9 +8,9 @@ from datetime import datetime, date
 from pytz import timezone
 from pathlib import Path
 
-from broker_manager import BrokerManager
-from scheduler import AnalysisScheduler, log_scheduler_info
-from crew import (
+from brokers.broker_manager import BrokerManager
+from trading.scheduler import AnalysisScheduler, log_scheduler_info
+from core.crew import (
     scheduled_search,
     scheduled_confirm,
     scheduled_execute,
@@ -203,7 +203,7 @@ class InvestmentSwarmApp:
 
     def run_backtest(self):
         """Ejecuta backtest. Permite elegir año/rango de años y tickers."""
-        from backtest import BacktestSimulator
+        from trading.backtest import BacktestSimulator
 
         current_year = datetime.now().year
 
@@ -313,7 +313,7 @@ def main():
         # Lanzar Streamlit dashboard
         if args.auto_start:
             app.start_scheduler()
-        os.system("streamlit run dashboard.py")
+        os.system("streamlit run dashboard/dashboard.py")
 
     elif args.mode == "daemon":
         # Modo daemon - solo scheduler sin UI

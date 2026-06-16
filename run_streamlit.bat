@@ -11,5 +11,5 @@ if errorlevel 1 (
 )
 
 echo Lanzando Streamlit...
-python -m streamlit run dashboard.py
+python -m streamlit run dashboard/dashboard.py
 pause
