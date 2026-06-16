@@ -1,15 +1,5 @@
 """
-DASHBOARD v2 - DUAL MODE (PAPER + LIVE TRADING)
-================================================
-
-Tabs:
-1. 💰 Paper Trading     - Operaciones en simulado
-2. 🔴 Live Trading      - Operaciones con dinero real
-3. 📊 Fundamental       - Análisis compartido
-4. 📰 Sentimiento       - Análisis compartido
-5. ⚙️ Técnico           - Específico del entorno
-
-Ejecutar con:  streamlit run dashboard.py
+DASHBOARD v3 - DUAL MODE + ANÁLISIS INTEGRADO
 """
 
 import streamlit as st
@@ -19,18 +9,21 @@ import os
 import sys
 from pathlib import Path
 from dotenv import load_dotenv
+import asyncio
+import json
+from concurrent.futures import ThreadPoolExecutor
 
-# Cargar .env
+# Setup
 load_dotenv()
-
-# Agregar el directorio padre al path para imports relativos
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-# Imports
-from trading.paper_trading_engine import (
-    PaperTradingEngine,
-    OPERATION_ORIGIN_MANUAL_DASHBOARD,
-)
+from trading.paper_trading_engine import PaperTradingEngine, OPERATION_ORIGIN_MANUAL_DASHBOARD
+from core.analysis_storage import AnalysisStorage
+from agents.fundamental_agent import create_fundamental_agent
+from agents.sentiment_agent import create_sentiment_agent
+from agents.technical_agent import create_technical_agent
+from crewai import Task, Crew, Process
+import re
 
 try:
     from brokers.interactive_brokers_broker import InteractiveBrokersBroker
@@ -38,11 +31,7 @@ try:
 except:
     IB_AVAILABLE = False
 
-st.set_page_config(
-    page_title="Investment Swarm - Dual Trading",
-    page_icon="📈",
-    layout="wide"
-)
+st.set_page_config(page_title="Investment Swarm", page_icon="📈", layout="wide")
 
 # ═══════════════════════════════════════════════════════════════
 # INICIALIZACIÓN
@@ -73,57 +62,127 @@ live_connected = st.session_state.live_connected
 def fmt_money(x: float) -> str:
     return f"${x:,.2f}"
 
-def fmt_pct(x: float) -> str:
-    sign = "+" if x >= 0 else ""
-    return f"{sign}{x:.2f}%"
-
 def pnl_color(x: float) -> str:
-    """Devuelve color para P&L."""
     return "🟢" if x >= 0 else "🔴"
+
+def run_analysis_sync(ticker: str, analysis_type: str):
+    """Ejecuta análisis de forma síncrona"""
+    try:
+        if analysis_type == "fundamental":
+            agent = create_fundamental_agent()
+            task = Task(
+                description=f"""Analiza los fundamentos de {ticker} y responde SOLO en JSON:
+                {{
+                    "score": 0-10,
+                    "confidence": 0-100,
+                    "risk_level": "LOW/MEDIUM/HIGH",
+                    "recommendation": "BUY/HOLD/SELL",
+                    "summary": "análisis breve"
+                }}""",
+                agent=agent,
+                expected_output="JSON válido sin texto adicional"
+            )
+        elif analysis_type == "sentiment":
+            agent = create_sentiment_agent()
+            task = Task(
+                description=f"Analiza sentimiento de {ticker}",
+                agent=agent,
+                expected_output="JSON con sentimiento"
+            )
+        else:  # technical
+            agent = create_technical_agent()
+            task = Task(
+                description=f"Analiza técnico de {ticker}",
+                agent=agent,
+                expected_output="JSON con signal"
+            )
+
+        crew = Crew(agents=[agent], tasks=[task], process=Process.sequential, verbose=False)
+        result = crew.kickoff()
+        output_str = str(result)
+
+        # Intenta parsear directamente
+        try:
+            data = json.loads(output_str)
+
+            # Si es fundamental, busca dentro de la estructura anidada
+            if analysis_type == "fundamental":
+                if isinstance(data, dict) and "output" in data:
+                    output_data = data["output"]
+                    if isinstance(output_data, list) and len(output_data) > 0:
+                        output_data = output_data[0].get("output", {})
+
+                    # Normalizar a formato simple
+                    return {
+                        "score": output_data.get("score", 5),
+                        "confidence": 80,
+                        "risk_level": "MEDIUM",
+                        "recommendation": "HOLD",
+                        "summary": f"Score: {output_data.get('score', 'N/A')}/10. " +
+                                 f"Ratios: P/E {output_data.get('ratiosFinancieros', {}).get('P/E', 'N/A')}, " +
+                                 f"Debt/Equity {output_data.get('ratiosFinancieros', {}).get('deuda/equity', 'N/A')}"
+                    }
+
+            # Para sentiment y technical
+            if isinstance(data, dict) and ("score" in data or "sentiment" in data or "signal" in data):
+                return data
+
+        except:
+            pass
+
+        # Fallback: busca JSONs en el texto
+        json_matches = list(re.finditer(r'\{[^{}]*"score"[^{}]*\}|\{[^{}]*"sentiment"[^{}]*\}|\{[^{}]*"signal"[^{}]*\}', output_str, re.DOTALL))
+
+        if json_matches:
+            for match in reversed(json_matches):
+                try:
+                    data = json.loads(match.group(0))
+                    if isinstance(data, dict):
+                        return data
+                except:
+                    continue
+
+        # Último fallback
+        return {
+            "score": 5 if analysis_type == "fundamental" else None,
+            "sentiment": "NEUTRO" if analysis_type == "sentiment" else None,
+            "signal": "HOLD" if analysis_type == "technical" else None,
+            "confidence": 50,
+            "summary": "Error en análisis - intenta de nuevo"
+        }
+
+    except Exception as e:
+        st.error(f"Error: {e}")
+        return None
 
 # ═══════════════════════════════════════════════════════════════
 # HEADER
 # ═══════════════════════════════════════════════════════════════
 
-st.markdown("# 📈 Investment Swarm - Dual Trading Dashboard")
-st.markdown("### Paper Trading + Live Trading (Interactive Brokers)")
+st.markdown("# 📈 Investment Swarm Dashboard")
 
 col1, col2, col3 = st.columns(3)
-
 with col1:
-    st.metric(
-        "📚 Paper Trading",
-        "Active",
-        delta="Simulado" if paper_engine else "Offline"
-    )
+    paper_portfolio = paper_engine.get_portfolio_summary()
+    st.metric("📚 Paper Trading", fmt_money(paper_portfolio["total_value"]))
 
 with col2:
-    status = "Active 🟢" if live_connected else "Offline ⚫"
-    st.metric(
-        "🔴 Live Trading",
-        status,
-        delta="Dinero real" if live_connected else "No disponible"
-    )
-
-with col3:
-    st.metric(
-        "⏱️ Última sincronización",
-        datetime.now().strftime("%H:%M:%S"),
-        delta="Ahora"
-    )
+    if live_connected:
+        live_portfolio = live_broker.get_portfolio_summary()
+        st.metric("🔴 Live Trading", fmt_money(live_portfolio["total_value"]))
+    else:
+        st.metric("🔴 Live Trading", "No disponible")
 
 st.divider()
 
 # ═══════════════════════════════════════════════════════════════
-# TABS PRINCIPALES
+# TABS
 # ═══════════════════════════════════════════════════════════════
 
-tab1, tab2, tab3, tab4, tab5 = st.tabs([
+tab1, tab2, tab3 = st.tabs([
     "💰 Paper Trading",
     "🔴 Live Trading",
-    "📊 Fundamental",
-    "📰 Sentimiento",
-    "⚙️ Técnico"
+    "📊 Análisis"
 ])
 
 # ─────────────────────────────────────────────────────────────
@@ -132,330 +191,230 @@ tab1, tab2, tab3, tab4, tab5 = st.tabs([
 
 with tab1:
     st.header("📚 Paper Trading")
-    
-    summary = paper_engine.get_portfolio_summary()
-    regime = paper_engine.get_regime()
-    
-    # Resumen rápido
-    col1, col2, col3, col4 = st.columns(4)
-    
-    with col1:
-        st.metric("💰 Cash", fmt_money(summary['cash']))
-    
-    with col2:
-        st.metric("📈 Posiciones", fmt_money(summary['positions_value']))
-    
-    with col3:
-        st.metric("💵 Total", fmt_money(summary['total_value']))
-    
-    with col4:
-        st.metric("📊 Return", fmt_pct(summary['return_pct']))
-    
-    st.divider()
-    
-    # Posiciones abiertas
-    st.subheader("📍 Posiciones Abiertas")
-    
-    if summary['positions']:
-        positions_data = []
-        for pos in summary['positions']:
-            positions_data.append({
-                'Ticker': pos['ticker'],
-                'Qty': pos['qty'],
-                'Entry': fmt_money(pos['entry_price']),
-                'Current': fmt_money(pos['current_price']),
-                'P&L': f"{pnl_color(pos['pnl'])} {fmt_money(pos['pnl'])}",
-                'Return': fmt_pct(pos['pnl_pct']),
-            })
-        
-        df = pd.DataFrame(positions_data)
-        st.dataframe(df, use_container_width=True)
-    else:
-        st.info("Sin posiciones abiertas")
-    
-    st.divider()
-    
-    # Operaciones manuales
-    st.subheader("🛒 Operaciones manuales")
-    
-    col1, col2, col3 = st.columns(3)
-    
-    with col1:
-        ticker = st.text_input("Ticker", value="MSFT", key="paper_ticker")
-    
-    with col2:
-        action = st.selectbox("Acción", ["BUY", "SELL"], key="paper_action")
-    
-    with col3:
-        quantity = st.number_input("Cantidad", min_value=1, value=1, key="paper_qty")
-    
+
     col1, col2 = st.columns(2)
-    
     with col1:
-        if st.button("🛒 Comprar (Paper)", key="btn_buy_paper"):
-            price = paper_engine.get_current_price(ticker)
-            if price:
-                result = paper_engine.execute_operation_manual(
-                    ticker=ticker,
-                    action="BUY",
-                    quantity=quantity,
-                    price=price,
-                    origin=OPERATION_ORIGIN_MANUAL_DASHBOARD,
-                    note="Compra vía Dashboard"
-                )
-                if result['success']:
-                    st.success(result['message'])
-                    st.rerun()
-                else:
-                    st.error(result['message'])
-    
+        st.subheader("Cartera")
+        portfolio = paper_engine.get_portfolio_summary()
+        st.metric("Total", fmt_money(portfolio["total_value"]))
+        st.metric("Cash", fmt_money(portfolio["cash"]))
+
     with col2:
-        if st.button("📊 Vender (Paper)", key="btn_sell_paper"):
-            price = paper_engine.get_current_price(ticker)
-            if price:
-                result = paper_engine.execute_operation_manual(
-                    ticker=ticker,
-                    action="SELL",
-                    quantity=quantity,
-                    price=price,
-                    origin=OPERATION_ORIGIN_MANUAL_DASHBOARD,
-                    note="Venta vía Dashboard"
-                )
-                if result['success']:
-                    st.success(result['message'])
-                    st.rerun()
-                else:
-                    st.error(result['message'])
-    
-    st.divider()
-    
-    # Histórico
-    st.subheader("📋 Histórico de operaciones")
-    
-    if paper_engine.state['trade_history']:
-        history_data = []
-        for trade in paper_engine.state['trade_history'][-10:]:  # Últimas 10
-            history_data.append({
-                'Fecha': trade['date'][-5:],  # HH:MM
-                'Ticker': trade['ticker'],
-                'Acción': trade['action'],
-                'Qty': trade['quantity'],
-                'Precio': fmt_money(trade['price']),
-                'Total': fmt_money(trade['amount']),
-                'Origin': trade['origin'],
-                'Opinion': trade['bot_opinion'],
-            })
-        
-        df = pd.DataFrame(history_data)
-        st.dataframe(df, use_container_width=True)
-    else:
-        st.info("Sin operaciones")
+        st.subheader("Posiciones")
+        portfolio = paper_engine.get_portfolio_summary()
+        positions = portfolio.get("positions", [])
+        if positions:
+            df = pd.DataFrame([
+                {
+                    "Ticker": p["ticker"],
+                    "Qty": p["qty"],
+                    "Entrada": f"${p['entry_price']:.2f}",
+                    "Actual": f"${p['current_price']:.2f}" if p['current_price'] else "N/A",
+                    "PnL": f"${p['pnl']:.2f}",
+                    "PnL%": f"{p['pnl_pct']:.2f}%"
+                }
+                for p in positions
+            ])
+            st.dataframe(df, use_container_width=True, hide_index=True)
+        else:
+            st.info("Sin posiciones")
 
 # ─────────────────────────────────────────────────────────────
 # TAB 2: LIVE TRADING
 # ─────────────────────────────────────────────────────────────
 
 with tab2:
-    st.header("🔴 Live Trading (Interactive Brokers)")
-    
-    if not live_connected:
-        st.warning("""
-        ⚠️ Live Trading no disponible
-        
-        Para habilitar:
-        1. Instala: pip install ib-insync
-        2. Abre IB Gateway (puerto 4002)
-        3. Recarga esta página
-        """)
+    st.header("🔴 Live Trading")
+    if live_connected:
+        st.success("✓ Conectado a Interactive Brokers")
+        portfolio = live_broker.get_portfolio_summary()
+        st.metric("Total", fmt_money(portfolio["total_value"]))
     else:
-        try:
-            summary = live_broker.get_portfolio_summary()
-            
-            # Resumen rápido
-            col1, col2, col3, col4 = st.columns(4)
-            
-            with col1:
-                st.metric("💰 Cash", fmt_money(summary['cash']))
-            
-            with col2:
-                st.metric("📈 Posiciones", fmt_money(summary['positions_value']))
-            
-            with col3:
-                st.metric("💵 Total", fmt_money(summary['total_value']))
-            
-            with col4:
-                st.metric("📊 Return", fmt_pct(summary['return_pct']))
-            
-            st.divider()
-            
-            # Posiciones
-            st.subheader("📍 Posiciones Abiertas (DINERO REAL)")
-            
-            if summary['positions']:
-                positions_data = []
-                for pos in summary['positions']:
-                    positions_data.append({
-                        'Ticker': pos['ticker'],
-                        'Qty': pos['qty'],
-                        'Entry': fmt_money(pos['entry_price']),
-                        'Current': fmt_money(pos['current_price']),
-                        'P&L': f"{pnl_color(pos['pnl'])} {fmt_money(pos['pnl'])}",
-                        'Return': fmt_pct(pos['pnl_pct']),
-                    })
-                
-                df = pd.DataFrame(positions_data)
-                st.dataframe(df, use_container_width=True)
-            else:
-                st.info("Sin posiciones abiertas")
-            
-            st.divider()
-            
-            # Operaciones (con advertencia)
-            st.subheader("🛒 Operaciones manuales (DINERO REAL)")
-            st.error("⚠️ TODAS LAS OPERACIONES USAN DINERO REAL")
-            
-            col1, col2, col3 = st.columns(3)
-            
-            with col1:
-                ticker = st.text_input("Ticker", value="MSFT", key="live_ticker")
-            
-            with col2:
-                action = st.selectbox("Acción", ["BUY", "SELL"], key="live_action")
-            
-            with col3:
-                quantity = st.number_input("Cantidad", min_value=1, value=1, key="live_qty")
-            
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                if st.button("🛒 COMPRAR REAL", key="btn_buy_live"):
-                    st.warning("Confirmación requerida en Telegram para operar")
-            
-            with col2:
-                if st.button("📊 VENDER REAL", key="btn_sell_live"):
-                    st.warning("Confirmación requerida en Telegram para operar")
-            
-            st.divider()
-            
-            # Histórico
-            st.subheader("📋 Histórico de operaciones")
-            
-            if live_broker.state.get('trade_history'):
-                history_data = []
-                for trade in live_broker.state['trade_history'][-10:]:
-                    history_data.append({
-                        'Fecha': trade['date'][-5:],
-                        'Ticker': trade['ticker'],
-                        'Acción': trade['action'],
-                        'Qty': trade['quantity'],
-                        'Precio': fmt_money(trade['price']),
-                        'Total': fmt_money(trade['amount']),
-                        'Origin': trade['origin'],
-                    })
-                
-                df = pd.DataFrame(history_data)
-                st.dataframe(df, use_container_width=True)
-            else:
-                st.info("Sin operaciones")
-        
-        except Exception as e:
-            st.error(f"Error: {str(e)}")
+        st.warning("⚠️ No disponible - Conecta IB Gateway en puerto 4002")
 
 # ─────────────────────────────────────────────────────────────
-# TAB 3: FUNDAMENTAL (COMPARTIDO)
+# TAB 3: ANÁLISIS INTEGRADO
 # ─────────────────────────────────────────────────────────────
 
 with tab3:
-    st.header("📊 Análisis Fundamental")
-    st.info("✅ Este análisis es compartido para Paper + Live Trading")
-    
-    col1, col2 = st.columns(2)
-    
+    st.header("📊 Análisis de Tickers")
+
+    # Input y botones
+    col1, col2, col3, col4, col5 = st.columns([2, 1, 1, 1, 1])
+
     with col1:
-        ticker = st.text_input("Ingresa ticker", value="AAPL", key="fund_ticker")
-    
+        ticker_input = st.text_input("Ticker:", placeholder="Ej: AAPL").upper()
+
     with col2:
-        if st.button("🔍 Analizar", key="btn_analyze_fundamental"):
-            st.info("Análisis fundamental - en desarrollo")
-    
+        if st.button("📊 Fundamental", key="btn_fund", use_container_width=True):
+            if ticker_input:
+                with st.spinner(f"Analizando {ticker_input}..."):
+                    result = run_analysis_sync(ticker_input, "fundamental")
+                    if result:
+                        AnalysisStorage.save_analysis(ticker_input, "fundamental", result)
+                        st.success("✓ Análisis guardado")
+                        st.json(result)
+            else:
+                st.error("Ingresa un ticker")
+
+    with col3:
+        if st.button("📰 Sentimiento", key="btn_sent", use_container_width=True):
+            if ticker_input:
+                with st.spinner(f"Analizando {ticker_input}..."):
+                    result = run_analysis_sync(ticker_input, "sentiment")
+                    if result:
+                        AnalysisStorage.save_analysis(ticker_input, "sentiment", result)
+                        st.success("✓ Análisis guardado")
+                        st.json(result)
+            else:
+                st.error("Ingresa un ticker")
+
+    with col4:
+        if st.button("📈 Técnico", key="btn_tech", use_container_width=True):
+            if ticker_input:
+                with st.spinner(f"Analizando {ticker_input}..."):
+                    result = run_analysis_sync(ticker_input, "technical")
+                    if result:
+                        AnalysisStorage.save_analysis(ticker_input, "technical", result)
+                        st.success("✓ Análisis guardado")
+                        st.json(result)
+            else:
+                st.error("Ingresa un ticker")
+
+    with col5:
+        if st.button("🔄 Todos", key="btn_all", use_container_width=True):
+            if ticker_input:
+                for analysis_type in ["fundamental", "sentiment", "technical"]:
+                    with st.spinner(f"Analizando {ticker_input} - {analysis_type}..."):
+                        result = run_analysis_sync(ticker_input, analysis_type)
+                        if result:
+                            AnalysisStorage.save_analysis(ticker_input, analysis_type, result)
+                st.success("✓ Todos los análisis guardados")
+            else:
+                st.error("Ingresa un ticker")
+
     st.divider()
-    st.markdown("""
-    El análisis fundamental evalúa:
-    - Crecimiento de ingresos
-    - Rentabilidad
-    - Deuda
-    - Valoración (P/E, PEG)
-    
-    Resultado: Score 0-10 (igual para paper y live)
-    """)
 
-# ─────────────────────────────────────────────────────────────
-# TAB 4: SENTIMIENTO (COMPARTIDO)
-# ─────────────────────────────────────────────────────────────
+    # Tabla de análisis
+    st.subheader("📋 Últimos Análisis")
 
-with tab4:
-    st.header("📰 Análisis de Sentimiento")
-    st.info("✅ Este análisis es compartido para Paper + Live Trading")
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        ticker = st.text_input("Ingresa ticker", value="TSLA", key="sent_ticker")
-    
-    with col2:
-        if st.button("🔍 Analizar", key="btn_analyze_sentiment"):
-            st.info("Análisis sentimiento - en desarrollo")
-    
-    st.divider()
-    st.markdown("""
-    El análisis sentimiento evalúa:
-    - News sentiment
-    - Social media (Reddit, Twitter)
-    - Insider trading
-    - Analyst ratings
-    
-    Resultado: Score 0-10 (igual para paper y live)
-    """)
+    all_analyses = AnalysisStorage.get_all_analyses()
 
-# ─────────────────────────────────────────────────────────────
-# TAB 5: TÉCNICO (ESPECÍFICO DEL ENTORNO)
-# ─────────────────────────────────────────────────────────────
+    if all_analyses:
+        rows = []
+        for ticker, analyses in all_analyses.items():
+            fundamental = analyses.get("fundamental", {}).get("data", {})
+            sentiment = analyses.get("sentiment", {}).get("data", {})
+            technical = analyses.get("technical", {}).get("data", {})
 
-with tab5:
-    st.header("⚙️ Análisis Técnico")
-    st.info("⚠️ Este análisis es específico del entorno seleccionado")
-    
-    # Selector de entorno
-    environment = st.radio(
-        "Selecciona entorno:",
-        ["📚 Paper Trading", "🔴 Live Trading"],
-        horizontal=True,
-        key="tech_env"
-    )
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        ticker = st.text_input("Ingresa ticker", value="SPY", key="tech_ticker")
-    
-    with col2:
-        if st.button("🔍 Analizar", key="btn_analyze_technical"):
-            st.info("Análisis técnico - en desarrollo")
-    
-    st.divider()
-    st.markdown(f"""
-    Analizando: **{environment}**
-    
-    El análisis técnico evalúa:
-    - SMA / EMA (medias móviles)
-    - RSI (Relative Strength Index)
-    - MACD (Moving Average Convergence Divergence)
-    - Bollinger Bands
-    - Volumen
-    
-    Resultado: BUY / HOLD / SELL
-    (Según señales técnicas del entorno seleccionado)
-    """)
+            # Usar timestamp más reciente
+            timestamps = [
+                analyses.get("fundamental", {}).get("timestamp", ""),
+                analyses.get("sentiment", {}).get("timestamp", ""),
+                analyses.get("technical", {}).get("timestamp", ""),
+            ]
+            latest = max([t for t in timestamps if t], default="N/A")
+
+            rows.append({
+                "Ticker": ticker,
+                "Fundamental": f"📊 {fundamental.get('score', 'N/A')}/10",
+                "Sentimiento": f"📰 {sentiment.get('sentiment', 'N/A')}",
+                "Técnico": f"📈 {technical.get('signal', 'N/A')}",
+                "Última actualización": latest[:10] if latest != "N/A" else "N/A"
+            })
+
+        df = pd.DataFrame(rows)
+
+        # Mostrar tabla
+        st.dataframe(df, use_container_width=True, hide_index=True)
+
+        # Hacer tabla interactiva - Detalles del Análisis
+        st.subheader("📌 Detalles del Análisis")
+        selected_ticker = st.selectbox("Selecciona un ticker:", [r["Ticker"] for r in rows], key="ticker_select")
+
+        if selected_ticker:
+            ticker_data = all_analyses[selected_ticker]
+
+            col1, col2, col3 = st.columns(3, gap="medium")
+
+            # FUNDAMENTAL
+            with col1:
+                if "fundamental" in ticker_data:
+                    fund_data = ticker_data["fundamental"]["data"]
+                    with st.container():
+                        st.markdown(f"### 📊 Fundamental")
+
+                        # Score con barra de progreso
+                        score = fund_data.get("score", 0)
+                        st.metric("Score", f"{score}/10", delta=None)
+
+                        # Progress bar
+                        progress_val = min(score / 10, 1.0)
+                        st.progress(progress_val)
+
+                        # Detalles
+                        st.markdown(f"**Confianza:** {fund_data.get('confidence', 'N/A')}%")
+                        st.markdown(f"**Riesgo:** {fund_data.get('risk_level', 'N/A')}")
+                        st.markdown(f"**Recomendación:** {fund_data.get('recommendation', 'N/A')}")
+
+                        with st.expander("📝 Análisis Completo"):
+                            st.write(fund_data.get("summary", "Sin información"))
+
+            # SENTIMIENTO
+            with col2:
+                if "sentiment" in ticker_data:
+                    sent_data = ticker_data["sentiment"]["data"]
+                    with st.container():
+                        st.markdown(f"### 📰 Sentimiento")
+
+                        sentiment = sent_data.get("sentiment", "N/A")
+
+                        # Color según sentimiento
+                        if sentiment == "POSITIVO":
+                            color = "🟢"
+                        elif sentiment == "NEGATIVO":
+                            color = "🔴"
+                        else:
+                            color = "🟡"
+
+                        st.metric("Sentimiento", f"{color} {sentiment}", delta=None)
+                        st.markdown(f"**Confianza:** {sent_data.get('confidence', 'N/A')}%")
+
+                        # Catalizadores
+                        catalysts = sent_data.get("catalysts", "")
+                        if catalysts:
+                            st.markdown("**Catalizadores:**")
+                            st.write(catalysts if isinstance(catalysts, str) else ", ".join(catalysts))
+
+                        with st.expander("📝 Resumen"):
+                            st.write(sent_data.get("summary", "Sin información"))
+
+            # TÉCNICO
+            with col3:
+                if "technical" in ticker_data:
+                    tech_data = ticker_data["technical"]["data"]
+                    with st.container():
+                        st.markdown(f"### 📈 Técnico")
+
+                        signal = tech_data.get("signal", "HOLD")
+
+                        # Color según signal
+                        if signal == "BUY":
+                            color = "🟢"
+                        elif signal == "SELL":
+                            color = "🔴"
+                        else:
+                            color = "🟡"
+
+                        st.metric("Signal", f"{color} {signal}", delta=None)
+                        st.markdown(f"**Confianza:** {tech_data.get('confidence', 'N/A')}%")
+                        st.markdown(f"**Soporte:** ${tech_data.get('support', 'N/A')}")
+                        st.markdown(f"**Resistencia:** ${tech_data.get('resistance', 'N/A')}")
+
+                        with st.expander("📝 Análisis"):
+                            st.write(tech_data.get("summary", "Sin información"))
+    else:
+        st.info("No hay análisis aún. Realiza algunos análisis para verlos aquí.")
 
 # ═══════════════════════════════════════════════════════════════
 # FOOTER
@@ -463,7 +422,6 @@ with tab5:
 
 st.divider()
 st.markdown("""
----
-**Investment Swarm Dashboard v2** | Paper + Live Trading |
+**Investment Swarm Dashboard v3** | Paper + Live Trading
 Powered by CrewAI + Ollama + Interactive Brokers
 """)

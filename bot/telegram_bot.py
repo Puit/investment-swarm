@@ -26,6 +26,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from agents.fundamental_agent import create_fundamental_agent
 from agents.sentiment_agent import create_sentiment_agent
 from agents.technical_agent import create_technical_agent
+from core.analysis_storage import AnalysisStorage
 from crewai import Task, Crew, Process
 
 logger = logging.getLogger(__name__)
@@ -248,6 +249,9 @@ ${portfolio['cash']:,.2f} disponible
             loop = asyncio.get_event_loop()
             analysis = await loop.run_in_executor(executor, run_analysis)
 
+            # Guardar análisis para sincronizar con dashboard
+            AnalysisStorage.save_analysis(ticker, "fundamental", analysis)
+
             if isinstance(analysis, dict) and "error" not in analysis:
                 text = f"""📊 <b>Análisis Fundamental: {ticker}</b>
 
@@ -306,6 +310,9 @@ ${portfolio['cash']:,.2f} disponible
             loop = asyncio.get_event_loop()
             analysis = await loop.run_in_executor(executor, run_analysis)
 
+            # Guardar análisis para sincronizar con dashboard
+            AnalysisStorage.save_analysis(ticker, "sentiment", analysis)
+
             text = f"""📰 <b>Sentimiento: {ticker}</b>
 
 <b>Sentimiento:</b> {analysis.get('sentiment', 'N/A')}
@@ -333,39 +340,59 @@ ${portfolio['cash']:,.2f} disponible
             def run_analysis():
                 agent = create_technical_agent()
                 task = Task(
-                    description=f"""Analiza el análisis técnico de {ticker}.
-                    Responde en JSON con: signal (BUY/HOLD/SELL), confidence (0-100),
-                    support, resistance, summary""",
+                    description=f"""Analiza el análisis técnico de {ticker} y responde SOLO en JSON:
+                    {{
+                        "signal": "BUY/HOLD/SELL",
+                        "confidence": 0-100,
+                        "support": "número",
+                        "resistance": "número",
+                        "summary": "análisis breve"
+                    }}""",
                     agent=agent,
-                    expected_output="JSON con análisis técnico"
+                    expected_output="JSON válido sin texto adicional"
                 )
                 crew = Crew(agents=[agent], tasks=[task], process=Process.sequential, verbose=False)
                 result = crew.kickoff()
-                output_str = str(result.raw) if hasattr(result, 'raw') else str(result)
-                
+                output_str = str(result) if hasattr(result, 'output') else str(result)
+
+                logger.info(f"Technical analysis output: {output_str[:500]}")
+
                 try:
-                    return json.loads(output_str)
+                    data = json.loads(output_str)
+                    if isinstance(data, dict):
+                        return data
                 except:
-                    json_matches = list(re.finditer(r'\{[^{}]*\}', output_str))
-                    if json_matches:
-                        for match in reversed(json_matches):
-                            try:
-                                return json.loads(match.group(0))
-                            except:
-                                continue
-                    return {"signal": "HOLD", "confidence": 50, "summary": output_str[:200]}
+                    pass
+
+                json_match = re.search(r'\{[^{}]*"signal"[^{}]*\}', output_str, re.DOTALL)
+                if json_match:
+                    try:
+                        return json.loads(json_match.group(0))
+                    except:
+                        logger.warning(f"JSON extraction failed for technical")
+
+                return {
+                    "signal": "HOLD",
+                    "confidence": 50,
+                    "support": "N/A",
+                    "resistance": "N/A",
+                    "summary": "Error - intenta de nuevo"
+                }
 
             loop = asyncio.get_event_loop()
             analysis = await loop.run_in_executor(executor, run_analysis)
 
+            # Guardar análisis para sincronizar con dashboard
+            AnalysisStorage.save_analysis(ticker, "technical", analysis)
+
             text = f"""📈 <b>Análisis Técnico: {ticker}</b>
 
-<b>Signal:</b> {analysis.get('signal', 'N/A')}
-<b>Confianza:</b> {analysis.get('confidence', 'N/A')}%
+<b>Signal:</b> {analysis.get('signal', 'HOLD')}
+<b>Confianza:</b> {analysis.get('confidence', 50)}%
 <b>Soporte:</b> {analysis.get('support', 'N/A')}
 <b>Resistencia:</b> {analysis.get('resistance', 'N/A')}
 
-<b>Resumen:</b> {analysis.get('summary', 'N/A')[:150]}
+<b>Resumen:</b> {str(analysis.get('summary', 'N/A'))[:150]}
 """
             await msg.edit_text(text, parse_mode="HTML")
         except Exception as e:
