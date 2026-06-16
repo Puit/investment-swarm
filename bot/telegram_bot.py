@@ -8,14 +8,6 @@ Estados:
 - NO_TRADING: Visualización únicamente (ambos entornos)
 - PAPER_TRADING: Operaciones en paper trading
 - LIVE_TRADING: Operaciones en live trading (dinero real)
-
-Uso:
-    bot = TelegramTradingBot(
-        paper_engine=engine,
-        live_broker=broker,
-        chat_id="123456789"
-    )
-    await bot.start_polling()
 """
 
 import logging
@@ -101,10 +93,13 @@ class TelegramTradingBotV2:
     
     async def cmd_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Comando /start - Mostrar estado actual."""
+        logger.info(f"✓ /start comando recibido de usuario {update.effective_user.id}")
         user_id = update.effective_user.id
         mode = self.user_modes.get(user_id, TradingMode.NO_TRADING)
-        
+        logger.info(f"  Modo actual: {mode}")
+
         # Obtener datos
+        logger.info("  Obteniendo portfolio paper...")
         paper_portfolio = self.paper_engine.get_portfolio_summary()
         live_portfolio = None
         if self.live_broker and self.live_broker.connected:
@@ -113,43 +108,43 @@ class TelegramTradingBotV2:
             except:
                 pass
         
-        # Mensaje
-        text = f"""
-🤖 *Investment Swarm Bot*
+        # Mensaje en HTML (más robusto que Markdown)
+        text = f"""🤖 <b>Investment Swarm Bot</b>
 
-*Estado actual:* {self._format_mode(mode)}
+<b>Estado actual:</b> {self._format_mode(mode)}
 
-📊 *Paper Trading*
+📊 <b>Paper Trading</b>
   💰 Cash: ${paper_portfolio['cash']:,.2f}
   📈 Total: ${paper_portfolio['total_value']:,.2f}
   📍 Posiciones: {len(paper_portfolio['positions'])}
 """
-        
+
         if live_portfolio:
             text += f"""
-🔴 *Live Trading*
+🔴 <b>Live Trading</b>
   💰 Cash: ${live_portfolio['cash']:,.2f}
   📈 Total: ${live_portfolio['total_value']:,.2f}
   📍 Posiciones: {len(live_portfolio['positions'])}
 """
-        
+
         text += """
-*Opciones:*
+<b>Opciones:</b>
 /paper_trading - Operar en paper
 /live_trading - Operar en vivo
 /no_trading - Solo visualizar
 /help - Mostrar comandos
 """
-        
-        await update.message.reply_text(text, parse_mode="Markdown")
+
+        logger.info(f"  Enviando respuesta al usuario...")
+        await update.message.reply_text(text, parse_mode="HTML")
+        logger.info(f"✓ Respuesta enviada exitosamente")
     
     async def cmd_no_trading(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Comando /no_trading - Cambiar a modo visualización."""
         user_id = update.effective_user.id
         self.user_modes[user_id] = TradingMode.NO_TRADING
         
-        text = """
-👁️ *Modo Visualización Activado*
+        text = """👁️ <b>Modo Visualización Activado</b>
 
 Puedes ver posiciones y portfolio de ambos entornos.
 No puedes hacer operaciones.
@@ -166,7 +161,7 @@ Para operar:
 /live_trading - Cambiar a live trading
 """
         
-        await update.message.reply_text(text, parse_mode="Markdown")
+        await update.message.reply_text(text, parse_mode="HTML")
     
     async def cmd_paper_trading(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Comando /paper_trading - Cambiar a modo paper."""
@@ -175,8 +170,7 @@ Para operar:
         
         portfolio = self.paper_engine.get_portfolio_summary()
         
-        text = f"""
-📚 *Modo Paper Trading Activado*
+        text = f"""📚 <b>Modo Paper Trading Activado</b>
 
 📊 Estado actual:
   💰 Cash: ${portfolio['cash']:,.2f}
@@ -196,29 +190,24 @@ Comandos disponibles:
 ⚠️ Paper trading: sin dinero real
 """
         
-        await update.message.reply_text(text, parse_mode="Markdown")
+        await update.message.reply_text(text, parse_mode="HTML")
     
     async def cmd_live_trading(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Comando /live_trading - Cambiar a modo live."""
         user_id = update.effective_user.id
         
         if not self.live_broker or not self.live_broker.connected:
-            await update.message.reply_text(
-                "❌ Live trading no disponible\n"
-                "Interactive Brokers no está conectado.",
-                parse_mode="Markdown"
-            )
+            text = "❌ Live Trading no disponible.\n\nInteractive Brokers no está conectado."
+            await update.message.reply_text(text, parse_mode="HTML")
             return
         
         self.user_modes[user_id] = TradingMode.LIVE_TRADING
         
-        try:
-            portfolio = self.live_broker.get_portfolio_summary()
-            
-            text = f"""
-🔴 *Modo Live Trading Activado*
+        portfolio = self.live_broker.get_portfolio_summary()
+        
+        text = f"""🔴 <b>Modo Live Trading Activado</b>
 
-⚠️ *DINERO REAL - CUIDADO*
+<b>OPERANDO CON DINERO REAL</b>
 
 📊 Estado actual:
   💰 Cash: ${portfolio['cash']:,.2f}
@@ -226,298 +215,146 @@ Comandos disponibles:
   📍 Posiciones: {len(portfolio['positions'])}
 
 Comandos disponibles:
-/buy TICKER QTY - Comprar (DINERO REAL)
-/sell TICKER QTY - Vender (DINERO REAL)
+/buy TICKER QTY - Comprar
+/sell TICKER QTY - Vender
 /positions - Ver posiciones
 /portfolio - Ver cartera
 /technical - Análisis técnico
-/fundamental - Análisis fundamental (compartido)
-/sentiment - Análisis sentimiento (compartido)
 /back - Volver a visualización
 
-⚠️ TODAS LAS OPERACIONES SON CON DINERO REAL
+<b>⚠️ ADVERTENCIA: Operando con dinero real</b>
 """
-            
-            await update.message.reply_text(text, parse_mode="Markdown")
         
-        except Exception as e:
-            logger.error(f"Error en live trading: {e}")
-            await update.message.reply_text(f"❌ Error: {str(e)}")
+        await update.message.reply_text(text, parse_mode="HTML")
     
     async def cmd_positions(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Comando /positions - Ver posiciones."""
+        """Comando /positions - Ver posiciones actuales."""
         user_id = update.effective_user.id
         mode = self.user_modes.get(user_id, TradingMode.NO_TRADING)
         
-        text = "📍 *Open positions*\n\n"
+        text = "<b>📍 Posiciones</b>\n\n"
         
-        # Paper trading
-        paper_portfolio = self.paper_engine.get_portfolio_summary()
-        if paper_portfolio['positions']:
-            text += "📚 *Paper Trading*\n"
-            for pos in paper_portfolio['positions']:
-                pnl_emoji = "📈" if pos['pnl'] >= 0 else "📉"
-                text += f"\n{pos['ticker']}\n"
-                text += f"  Qty: {pos['qty']}\n"
-                text += f"  Entry: ${pos['entry_price']:.2f}\n"
-                text += f"  Current: ${pos['current_price']:.2f}\n"
-                text += f"  {pnl_emoji} P&L: ${pos['pnl']:.2f} ({pos['pnl_pct']:.2f}%)\n"
-        else:
-            text += "📚 *Paper Trading*\n  Sin posiciones\n"
+        # Paper Trading
+        try:
+            positions = self.paper_engine.get_positions()
+            if positions:
+                text += "<b>📚 Paper Trading:</b>\n"
+                for ticker, qty in positions.items():
+                    text += f"  {ticker}: {qty} shares\n"
+            else:
+                text += "<b>📚 Paper Trading:</b> Sin posiciones\n"
+        except Exception as e:
+            text += f"<b>📚 Paper Trading:</b> Error ({e})\n"
         
-        # Live trading
-        if mode in [TradingMode.LIVE_TRADING, TradingMode.NO_TRADING]:
-            if self.live_broker and self.live_broker.connected:
-                try:
-                    live_portfolio = self.live_broker.get_portfolio_summary()
-                    if live_portfolio['positions']:
-                        text += "\n🔴 *Live Trading*\n"
-                        for pos in live_portfolio['positions']:
-                            pnl_emoji = "📈" if pos['pnl'] >= 0 else "📉"
-                            text += f"\n{pos['ticker']}\n"
-                            text += f"  Qty: {pos['qty']}\n"
-                            text += f"  Entry: ${pos['entry_price']:.2f}\n"
-                            text += f"  Current: ${pos['current_price']:.2f}\n"
-                            text += f"  {pnl_emoji} P&L: ${pos['pnl']:.2f} ({pos['pnl_pct']:.2f}%)\n"
-                    else:
-                        text += "\n🔴 *Live Trading*\n  Sin posiciones\n"
-                except:
-                    pass
+        # Live Trading
+        if self.live_broker and self.live_broker.connected:
+            try:
+                positions = self.live_broker.get_positions()
+                if positions:
+                    text += "\n<b>🔴 Live Trading:</b>\n"
+                    for ticker, qty in positions.items():
+                        text += f"  {ticker}: {qty} shares\n"
+                else:
+                    text += "\n<b>🔴 Live Trading:</b> Sin posiciones\n"
+            except Exception as e:
+                text += f"\n<b>🔴 Live Trading:</b> Error ({e})\n"
         
-        await update.message.reply_text(text, parse_mode="Markdown")
+        await update.message.reply_text(text, parse_mode="HTML")
     
     async def cmd_portfolio(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Comando /portfolio - Ver cartera."""
         user_id = update.effective_user.id
-        mode = self.user_modes.get(user_id, TradingMode.NO_TRADING)
         
-        text = "📊 *Portfolio Summary*\n\n"
+        text = "<b>💼 Cartera</b>\n\n"
         
-        # Paper
-        paper = self.paper_engine.get_portfolio_summary()
-        text += f"📚 *Paper Trading*\n"
-        text += f"  💰 Cash: ${paper['cash']:,.2f}\n"
-        text += f"  📈 Posiciones: ${paper['positions_value']:,.2f}\n"
-        text += f"  💵 Total: ${paper['total_value']:,.2f}\n"
-        text += f"  📊 Return: {paper['return_pct']:.2f}%\n"
+        # Paper Trading
+        try:
+            portfolio = self.paper_engine.get_portfolio_summary()
+            text += f"""<b>📚 Paper Trading:</b>
+  💰 Cash: ${portfolio['cash']:,.2f}
+  📈 Total: ${portfolio['total_value']:,.2f}
+  📊 Posiciones: {len(portfolio['positions'])}
+"""
+        except Exception as e:
+            text += f"<b>📚 Paper Trading:</b> Error ({e})\n"
         
-        # Live
-        if mode in [TradingMode.LIVE_TRADING, TradingMode.NO_TRADING]:
-            if self.live_broker and self.live_broker.connected:
-                try:
-                    live = self.live_broker.get_portfolio_summary()
-                    text += f"\n🔴 *Live Trading*\n"
-                    text += f"  💰 Cash: ${live['cash']:,.2f}\n"
-                    text += f"  📈 Posiciones: ${live['positions_value']:,.2f}\n"
-                    text += f"  💵 Total: ${live['total_value']:,.2f}\n"
-                except:
-                    pass
+        # Live Trading
+        if self.live_broker and self.live_broker.connected:
+            try:
+                portfolio = self.live_broker.get_portfolio_summary()
+                text += f"""
+<b>🔴 Live Trading:</b>
+  💰 Cash: ${portfolio['cash']:,.2f}
+  📈 Total: ${portfolio['total_value']:,.2f}
+  📊 Posiciones: {len(portfolio['positions'])}
+"""
+            except Exception as e:
+                text += f"\n<b>🔴 Live Trading:</b> Error ({e})\n"
         
-        await update.message.reply_text(text, parse_mode="Markdown")
+        await update.message.reply_text(text, parse_mode="HTML")
+    
+    def _format_mode(self, mode: TradingMode) -> str:
+        """Formatea el modo de trading."""
+        if mode == TradingMode.NO_TRADING:
+            return "👁️ Visualización"
+        elif mode == TradingMode.PAPER_TRADING:
+            return "📚 Paper Trading"
+        elif mode == TradingMode.LIVE_TRADING:
+            return "🔴 Live Trading"
+        return "❓ Desconocido"
     
     async def cmd_buy(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Comando /buy TICKER QTY - Comprar."""
-        user_id = update.effective_user.id
-        mode = self.user_modes.get(user_id, TradingMode.NO_TRADING)
-        
-        if mode == TradingMode.NO_TRADING:
-            await update.message.reply_text(
-                "❌ Primero selecciona modo:\n/paper_trading o /live_trading"
-            )
-            return
-        
-        try:
-            args = context.args
-            if len(args) < 2:
-                await update.message.reply_text("Uso: /buy TICKER CANTIDAD")
-                return
-            
-            ticker = args[0].upper()
-            quantity = int(args[1])
-            
-            if mode == TradingMode.PAPER_TRADING:
-                price = self.paper_engine.get_current_price(ticker)
-                if price:
-                    text = f"🛒 *Confirmar compra*\n\n"
-                    text += f"Ticker: {ticker}\n"
-                    text += f"Cantidad: {quantity}\n"
-                    text += f"Precio: ${price:.2f}\n"
-                    text += f"Total: ${price * quantity:,.2f}\n\n"
-                    text += "¿Confirmar?"
-                    
-                    # Botones de confirmación
-                    keyboard = [
-                        [
-                            InlineKeyboardButton("✅ Confirmar", callback_data=f"buy_paper_{ticker}_{quantity}"),
-                            InlineKeyboardButton("❌ Cancelar", callback_data="cancel")
-                        ]
-                    ]
-                    
-                    await update.message.reply_text(
-                        text,
-                        reply_markup=InlineKeyboardMarkup(keyboard),
-                        parse_mode="Markdown"
-                    )
-            
-            elif mode == TradingMode.LIVE_TRADING:
-                price = self.live_broker.get_current_price(ticker)
-                if price:
-                    text = f"🔴 *COMPRA EN VIVO - DINERO REAL*\n\n"
-                    text += f"Ticker: {ticker}\n"
-                    text += f"Cantidad: {quantity}\n"
-                    text += f"Precio: ${price:.2f}\n"
-                    text += f"Total: ${price * quantity:,.2f}\n\n"
-                    text += "⚠️ ESTA OPERACIÓN USARÁ DINERO REAL\n"
-                    text += "¿Confirmar?"
-                    
-                    keyboard = [
-                        [
-                            InlineKeyboardButton("✅ CONFIRMAR", callback_data=f"buy_live_{ticker}_{quantity}"),
-                            InlineKeyboardButton("❌ Cancelar", callback_data="cancel")
-                        ]
-                    ]
-                    
-                    await update.message.reply_text(
-                        text,
-                        reply_markup=InlineKeyboardMarkup(keyboard),
-                        parse_mode="Markdown"
-                    )
-        
-        except Exception as e:
-            logger.error(f"Error en /buy: {e}")
-            await update.message.reply_text(f"❌ Error: {str(e)}")
+        """Placeholder para buy."""
+        await update.message.reply_text("Comando /buy en desarrollo", parse_mode="HTML")
     
     async def cmd_sell(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Comando /sell TICKER QTY - Vender."""
-        user_id = update.effective_user.id
-        mode = self.user_modes.get(user_id, TradingMode.NO_TRADING)
-        
-        if mode == TradingMode.NO_TRADING:
-            await update.message.reply_text(
-                "❌ Primero selecciona modo:\n/paper_trading o /live_trading"
-            )
-            return
-        
-        # Implementación similar a /buy pero para SELL
-        await update.message.reply_text("Comando /sell - en desarrollo")
+        """Placeholder para sell."""
+        await update.message.reply_text("Comando /sell en desarrollo", parse_mode="HTML")
     
     async def cmd_back(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Comando /back - Volver a /no_trading."""
+        """Volver a visualización."""
         await self.cmd_no_trading(update, context)
     
     async def cmd_fundamental(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Comando /fundamental - Análisis fundamental (compartido)."""
-        await update.message.reply_text("Análisis fundamental - en desarrollo")
+        """Placeholder para análisis fundamental."""
+        await update.message.reply_text("Análisis fundamental en desarrollo", parse_mode="HTML")
     
     async def cmd_sentiment(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Comando /sentiment - Análisis sentimiento (compartido)."""
-        await update.message.reply_text("Análisis sentimiento - en desarrollo")
+        """Placeholder para análisis de sentimiento."""
+        await update.message.reply_text("Análisis de sentimiento en desarrollo", parse_mode="HTML")
     
     async def cmd_technical(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Comando /technical - Análisis técnico (específico del modo)."""
-        await update.message.reply_text("Análisis técnico - en desarrollo")
+        """Placeholder para análisis técnico."""
+        await update.message.reply_text("Análisis técnico en desarrollo", parse_mode="HTML")
     
     async def cmd_help(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Comando /help - Mostrar ayuda."""
-        text = """
-🤖 *Investment Swarm Bot - Comandos*
+        """Comando /help - Mostrar comandos disponibles."""
+        text = """<b>📚 Comandos Disponibles</b>
 
-*Modo:*
-/start - Estado actual
-/paper_trading - Cambiar a paper trading
-/live_trading - Cambiar a live trading
-/no_trading - Solo visualizar
-/back - Volver
+<b>Modo:</b>
+/no_trading - Visualización únicamente
+/paper_trading - Operar en simulado
+/live_trading - Operar con dinero real
 
-*Posiciones (todos los modos):*
-/positions - Ver posiciones abiertas
-/portfolio - Ver cartera completa
+<b>Posiciones y cartera:</b>
+/positions - Ver posiciones (ambos)
+/portfolio - Ver cartera (ambos)
 
-*Operaciones (paper/live):*
-/buy TICKER QTY - Comprar
-/sell TICKER QTY - Vender
+<b>Operaciones (paper/live):</b>
+/buy - Comprar
+/sell - Vender
+/back - Volver a visualización
 
-*Análisis:*
+<b>Análisis:</b>
 /fundamental - Análisis fundamental (compartido)
 /sentiment - Análisis sentimiento (compartido)
-/technical - Análisis técnico (específico del modo)
+/technical - Análisis técnico
 
-*Otros:*
+<b>Otros:</b>
 /help - Este mensaje
 """
-        
-        await update.message.reply_text(text, parse_mode="Markdown")
+        await update.message.reply_text(text, parse_mode="HTML")
     
     async def button_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Callback para botones inline."""
-        query = update.callback_query
-        data = query.data
-        
-        await query.answer()
-        
-        if data == "cancel":
-            await query.edit_message_text("❌ Operación cancelada")
-        
-        elif data.startswith("buy_paper_"):
-            # Parsear: buy_paper_MSFT_10
-            parts = data.split("_")
-            ticker = parts[2]
-            quantity = int(parts[3])
-            
-            # Ejecutar compra
-            price = self.paper_engine.get_current_price(ticker)
-            result = self.paper_engine.execute_operation_manual(
-                ticker=ticker,
-                action="BUY",
-                quantity=quantity,
-                price=price,
-                origin="MANUAL_TELEGRAM",
-                note=f"Compra vía Telegram: {quantity} {ticker}"
-            )
-            
-            if result["success"]:
-                await query.edit_message_text(f"✅ {result['message']}")
-            else:
-                await query.edit_message_text(f"❌ {result['message']}")
-        
-        elif data.startswith("buy_live_"):
-            # Parsear: buy_live_MSFT_10
-            parts = data.split("_")
-            ticker = parts[2]
-            quantity = int(parts[3])
-            
-            # Ejecutar compra en live
-            result = self.live_broker.place_order(
-                ticker=ticker,
-                action="BUY",
-                quantity=quantity,
-                order_type="MARKET"
-            )
-            
-            if result["success"]:
-                await query.edit_message_text(f"✅ 🔴 ORDEN EJECUTADA\n\n{result['message']}")
-            else:
-                await query.edit_message_text(f"❌ {result['message']}")
-    
-    def _format_mode(self, mode: TradingMode) -> str:
-        """Formatea el modo para mostrar."""
-        modes = {
-            TradingMode.NO_TRADING: "👁️ Visualización",
-            TradingMode.PAPER_TRADING: "📚 Paper Trading",
-            TradingMode.LIVE_TRADING: "🔴 Live Trading",
-        }
-        return modes.get(mode, "Desconocido")
-    
-    async def start_polling(self) -> None:
-        """Inicia el bot en polling mode."""
-        await self.app.initialize()
-        await self.app.start()
-        await self.app.updater.start_polling()
-        logger.info("Bot iniciado en polling mode")
-    
-    async def stop(self) -> None:
-        """Detiene el bot."""
-        await self.app.updater.stop()
-        await self.app.stop()
-        await self.app.shutdown()
-        logger.info("Bot detenido")
+        """Maneja callbacks de botones."""
+        await update.callback_query.answer()

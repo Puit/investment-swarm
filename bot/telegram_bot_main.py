@@ -102,14 +102,27 @@ async def main():
     
     try:
         # Iniciar polling
+        logger.info("Inicializando aplicación...")
         await bot.app.initialize()
+        logger.info("✓ Aplicación inicializada")
+
+        logger.info("Iniciando aplicación...")
         await bot.app.start()
+        logger.info("✓ Aplicación iniciada")
+
+        logger.info("Iniciando polling...")
         await bot.app.updater.start_polling(
             allowed_updates=['message', 'callback_query']
         )
-        
-        # Mantener corriendo
-        await bot.app.updater.idle()
+        logger.info("✓ Polling iniciado, esperando mensajes...")
+
+        # Mantener corriendo indefinidamente
+        logger.info("Entrando en modo idle...")
+        try:
+            await asyncio.Event().wait()  # Esperar indefinidamente
+        except KeyboardInterrupt:
+            pass
+        logger.info("✓ Idle finalizado")
     
     except KeyboardInterrupt:
         logger.info("\n\n⏹ Bot detenido por usuario")

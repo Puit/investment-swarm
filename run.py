@@ -22,6 +22,13 @@ import signal
 from pathlib import Path
 import argparse
 
+# Intentar importar psutil, si no está disponible usar fallback
+try:
+    import psutil
+    HAS_PSUTIL = True
+except ImportError:
+    HAS_PSUTIL = False
+
 # Colores para output
 class Colors:
     HEADER = '\033[95m'
@@ -103,12 +110,47 @@ def check_dependencies():
 
 class UnifiedLauncher:
     """Lanzador unificado de todos los servicios."""
-    
+
     def __init__(self, scheduler_time="09:30"):
         self.processes = {}
         self.scheduler_time = scheduler_time
         self.running = True
+
+        # Matar procesos previos del bot
+        self._kill_previous_bot_instances()
     
+    def _kill_previous_bot_instances(self):
+        """Mata cualquier instancia anterior del bot de Telegram."""
+        try:
+            if HAS_PSUTIL:
+                # Usar psutil si está disponible
+                for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
+                    try:
+                        cmdline = proc.info['cmdline']
+                        if cmdline and 'telegram_bot_main.py' in ' '.join(cmdline):
+                            print(f"{Colors.YELLOW}⚠️  Matando bot anterior (PID: {proc.info['pid']})...{Colors.ENDC}")
+                            proc.kill()
+                            time.sleep(0.5)
+                    except (psutil.NoSuchProcess, psutil.AccessDenied):
+                        pass
+            else:
+                # Fallback: usar taskkill en Windows
+                if sys.platform == 'win32':
+                    try:
+                        # Buscar y matar procesos que ejecuten telegram_bot_main.py
+                        result = subprocess.run(
+                            ['taskkill', '/F', '/IM', 'python.exe', '/V'],
+                            capture_output=True,
+                            timeout=5
+                        )
+                        # Solo matar si encontramos procesos
+                        if 'telegram' in result.stdout.decode(errors='ignore').lower():
+                            print(f"{Colors.YELLOW}⚠️  Se terminaron instancias previas del bot...{Colors.ENDC}")
+                    except:
+                        pass
+        except Exception as e:
+            print(f"{Colors.YELLOW}⚠️  No se pudo limpiar procesos previos: {e}{Colors.ENDC}")
+
     def start_telegram_bot(self):
         """Inicia Telegram Bot."""
         print_service_starting("TELEGRAM BOT", "python bot/telegram_bot_main.py")
@@ -116,19 +158,18 @@ class UnifiedLauncher:
         try:
             process = subprocess.Popen(
                 [sys.executable, "bot/telegram_bot_main.py"],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
+                stdout=None,  # Mostrar logs en tiempo real
+                stderr=None,  # Mostrar errores en tiempo real
                 text=True,
                 bufsize=1,
             )
             self.processes["telegram_bot"] = process
-            time.sleep(2)
-            
+            time.sleep(3)
+
             if process.poll() is None:
                 print_service_ready("TELEGRAM BOT", "Escuchando comandos (Paper + Live)")
             else:
-                _, stderr = process.communicate()
-                print_error("TELEGRAM BOT", stderr)
+                print_error("TELEGRAM BOT", "Proceso terminó inesperadamente")
                 return False
         except Exception as e:
             print_error("TELEGRAM BOT", str(e))
@@ -140,26 +181,25 @@ class UnifiedLauncher:
         """Inicia Scheduler."""
         cmd = [sys.executable, "trading/scheduler.py", "--time", self.scheduler_time]
         print_service_starting("SCHEDULER", " ".join(cmd))
-        
+
         try:
             process = subprocess.Popen(
                 cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
+                stdout=None,  # Mostrar logs en tiempo real
+                stderr=None,  # Mostrar errores en tiempo real
                 text=True,
                 bufsize=1,
             )
             self.processes["scheduler"] = process
-            time.sleep(2)
-            
+            time.sleep(3)
+
             if process.poll() is None:
                 print_service_ready(
                     "SCHEDULER",
                     f"Análisis programados para {self.scheduler_time} CET"
                 )
             else:
-                _, stderr = process.communicate()
-                print_error("SCHEDULER", stderr)
+                print_error("SCHEDULER", "Proceso terminó inesperadamente")
                 return False
         except Exception as e:
             print_error("SCHEDULER", str(e))
@@ -171,23 +211,22 @@ class UnifiedLauncher:
         """Inicia Dashboard Streamlit."""
         cmd = [sys.executable, "-m", "streamlit", "run", "dashboard/dashboard.py"]
         print_service_starting("DASHBOARD", " ".join(cmd))
-        
+
         try:
             process = subprocess.Popen(
                 cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
+                stdout=None,  # Mostrar logs en tiempo real
+                stderr=None,  # Mostrar errores en tiempo real
                 text=True,
                 bufsize=1,
             )
             self.processes["dashboard"] = process
-            time.sleep(3)
-            
+            time.sleep(4)
+
             if process.poll() is None:
                 print_service_ready("DASHBOARD", "http://localhost:8501")
             else:
-                _, stderr = process.communicate()
-                print_error("DASHBOARD", stderr)
+                print_error("DASHBOARD", "Proceso terminó inesperadamente")
                 return False
         except Exception as e:
             print_error("DASHBOARD", str(e))
