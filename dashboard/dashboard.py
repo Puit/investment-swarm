@@ -175,10 +175,11 @@ st.divider()
 # TABS
 # ═══════════════════════════════════════════════════════════════
 
-tab1, tab2, tab3 = st.tabs([
+tab1, tab2, tab3, tab4 = st.tabs([
     "💰 Paper Trading",
     "🔴 Live Trading",
-    "📊 Análisis"
+    "📊 Análisis",
+    "🧪 Tests & Simulation"
 ])
 
 # ─────────────────────────────────────────────────────────────
@@ -428,6 +429,321 @@ with tab3:
                             st.write(tech_data.get("summary", "Sin información"))
     else:
         st.info("No hay análisis aún. Realiza algunos análisis para verlos aquí.")
+
+
+# ─────────────────────────────────────────────────────────────
+# TAB 4: TESTS & SIMULATION
+# ─────────────────────────────────────────────────────────────
+
+with tab4:
+    st.header("🧪 Tests & Simulation")
+
+    # Import backtest runner
+    from trading.backtest_runner import BacktestRunner
+    import subprocess
+
+    # Crear dos columnas principales
+    col_tests, col_backtest = st.columns(2)
+
+    # TESTS
+    with col_tests:
+        st.subheader("🧪 Ejecutar Tests")
+
+        st.markdown("""
+        Ejecuta la suite de tests para validar:
+        - Paper Trading Engine
+        - Telegram Bot
+        - Scheduler
+        - Integraciones
+        """)
+
+        col_test_buttons = st.columns(3)
+
+        with col_test_buttons[0]:
+            if st.button("▶️ Diagnóstico", width="stretch", key="btn_test_diagnose"):
+                st.info("Ejecutando diagnóstico...")
+                try:
+                    result = subprocess.run(
+                        ["python", "tests/diagnose_telegram.py"],
+                        capture_output=True,
+                        text=True,
+                        timeout=60
+                    )
+                    st.code(result.stdout, language="text")
+                except Exception as e:
+                    st.error(f"Error: {e}")
+
+        with col_test_buttons[1]:
+            if st.button("▶️ Suite", width="stretch", key="btn_test_suite"):
+                st.info("Ejecutando tests...")
+                try:
+                    result = subprocess.run(
+                        ["python", "tests/test_suite.py"],
+                        capture_output=True,
+                        text=True,
+                        timeout=120
+                    )
+                    st.code(result.stdout, language="text")
+                except Exception as e:
+                    st.error(f"Error: {e}")
+
+        with col_test_buttons[2]:
+            if st.button("▶️ Pytest", width="stretch", key="btn_test_pytest"):
+                st.info("Ejecutando pytest...")
+                try:
+                    result = subprocess.run(
+                        ["python", "-m", "pytest", "tests/", "-v"],
+                        capture_output=True,
+                        text=True,
+                        timeout=120
+                    )
+                    st.code(result.stdout, language="text")
+                except Exception as e:
+                    st.warning(f"Pytest no disponible: {e}")
+
+    # BACKTEST
+    with col_backtest:
+        st.subheader("📊 Ejecutar Backtest Automático")
+
+        st.markdown("""
+        🤖 **El bot opera completamente automático:**
+        - Analiza múltiples tickers en paralelo
+        - Distribuye capital inteligentemente entre oportunidades
+        - Compra/vende según análisis técnico, fundamental y sentimental
+        - Toma decisiones de forma independiente cada día
+        """)
+
+        # TICKERS
+        st.markdown("**📊 Tickers a simular:**")
+        col_ticker_input = st.columns([3, 1])
+
+        with col_ticker_input[0]:
+            ticker_input = st.text_input(
+                "Ingresa tickers separados por comas",
+                placeholder="AAPL,MSFT,TSLA,GOOGL",
+                key="backtest_ticker_input"
+            )
+
+        with col_ticker_input[1]:
+            st.write("")
+            st.write("")
+            use_predefined = st.checkbox("O usar predefinidos", key="use_predefined_tickers")
+
+        # Parsear tickers
+        if use_predefined:
+            tickers_to_use = None
+            st.info("ℹ️ Usando tickers predefinidos del sistema")
+        elif ticker_input:
+            tickers_to_use = [t.strip().upper() for t in ticker_input.split(",") if t.strip()]
+            if tickers_to_use:
+                st.success(f"✅ Usando: {', '.join(tickers_to_use)}")
+            else:
+                tickers_to_use = None
+        else:
+            tickers_to_use = None
+
+        st.divider()
+
+        # FECHAS
+        date_range = st.selectbox(
+            "📅 Rango de fechas",
+            options=list(BacktestRunner.PREDEFINED_RANGES.keys()) + ["Custom"],
+            key="backtest_date_range"
+        )
+
+        custom_start = None
+        custom_end = None
+
+        if date_range == "Custom":
+            col_custom_dates = st.columns(2)
+            with col_custom_dates[0]:
+                custom_start = st.date_input("Inicio", value=datetime(2023, 1, 1).date())
+            with col_custom_dates[1]:
+                custom_end = st.date_input("Fin", value=datetime.now().date())
+
+        # CAPITAL
+        initial_capital = st.number_input(
+            "💰 Capital Inicial",
+            min_value=1000.0,
+            max_value=1000000.0,
+            value=5000.0,
+            step=1000.0,
+            key="backtest_capital"
+        )
+
+        # COSTO
+        col_cost = st.columns([2, 1])
+        with col_cost[0]:
+            cost_input = st.slider("Costo Transacción (%)", 0.0, 1.0, 0.1, 0.01, key="backtest_cost")
+        with col_cost[1]:
+            transaction_cost_pct = cost_input / 100.0
+
+        st.divider()
+
+        # Botones de acción
+        col_btn_execute, col_btn_clear = st.columns([0.7, 0.3])
+
+        with col_btn_execute:
+            btn_execute = st.button("▶️ EJECUTAR SIMULACIÓN", width="stretch", key="btn_run_backtest")
+
+        with col_btn_clear:
+            btn_clear = st.button("🗑️ Limpiar Caché", width="stretch", key="btn_clear_cache", help="Elimina todos los datos históricos guardados")
+
+        # Mostrar info del caché
+        cached_tickers = BacktestRunner.get_cached_tickers()
+        cache_size = BacktestRunner.get_cache_size()
+
+        if cached_tickers or cache_size != "0 B":
+            st.caption(f"📊 Caché: {len(cached_tickers)} tickers • {cache_size}")
+
+        # Manejo del botón de limpiar
+        if btn_clear:
+            st.warning("⚠️ ¿Estás seguro de que quieres eliminar TODO el histórico de datos?")
+
+            col_confirm_yes, col_confirm_no = st.columns(2)
+
+            with col_confirm_yes:
+                if st.button("✅ Sí, eliminar todo", width="stretch", key="btn_confirm_clear"):
+                    success, message = BacktestRunner.clear_all_cache()
+                    if success:
+                        st.success(message)
+                        st.rerun()
+                    else:
+                        st.error(message)
+
+            with col_confirm_no:
+                if st.button("❌ Cancelar", width="stretch", key="btn_cancel_clear"):
+                    st.rerun()
+
+        if btn_execute:
+            if not tickers_to_use and not use_predefined:
+                st.error("❌ Ingresa tickers o selecciona 'usar predefinidos'")
+            else:
+                st.info("⏳ Ejecutando backtest automático...")
+
+                with st.spinner("Descargando datos históricos y analizando..."):
+                    result = BacktestRunner.run_backtest(
+                        date_range=date_range,
+                        initial_capital=initial_capital,
+                        transaction_cost_pct=transaction_cost_pct,
+                        custom_start=custom_start,
+                        custom_end=custom_end,
+                        tickers=tickers_to_use
+                    )
+
+                if result['success']:
+                    metrics = result['metrics']
+                    formatted = BacktestRunner.format_metrics_for_display(metrics)
+
+                    st.success("✅ ¡Simulación completada!")
+
+                    st.markdown("## 📊 RESUMEN DE RESULTADOS")
+                    col_main = st.columns(4)
+                    perf = formatted['Performance']
+
+                    with col_main[0]:
+                        st.metric("💰 Capital Final", perf['Capital Final'], delta=perf['Return %'])
+                    with col_main[1]:
+                        st.metric("📈 Retorno %", perf['Return %'])
+                    with col_main[2]:
+                        st.metric("📉 Max Drawdown", perf['Max Drawdown'])
+                    with col_main[3]:
+                        st.metric("⚖️ Sharpe Ratio", perf['Sharpe Ratio'])
+
+                    st.divider()
+
+                    st.markdown("## 🤖 ACTIVIDAD DEL BOT")
+                    col_activity = st.columns(5)
+                    trading = formatted['Trading']
+
+                    with col_activity[0]:
+                        st.metric("🟢 Compras", trading['Total Compras'])
+                    with col_activity[1]:
+                        st.metric("🔴 Ventas", trading['Total Ventas'])
+                    with col_activity[2]:
+                        st.metric("📍 Posiciones", trading['Posiciones Abiertas'])
+                    with col_activity[3]:
+                        st.metric("✅ Win Rate", trading['Win Rate'])
+                    with col_activity[4]:
+                        st.metric("🛑 Stop Loss", trading['Stop Loss'])
+
+                    st.divider()
+
+                    st.markdown("## 📊 COMPARACIÓN CON BENCHMARKS")
+                    comp = formatted['Comparación']
+                    col_comp = st.columns(3)
+
+                    with col_comp[0]:
+                        st.metric("🤖 Bot", comp['Bot Return'])
+                    with col_comp[1]:
+                        st.metric("📈 Buy & Hold", comp['Buy & Hold'])
+                    with col_comp[2]:
+                        st.metric("🎯 SPY", comp['SPY Return'])
+
+                    st.info(f"""
+                    **Bot vs Estrategias:**
+                    - vs Buy&Hold: {comp['Bot vs Buy&Hold']}
+                    - vs Perfect Timing: {comp['Bot vs Perfect Timing']}
+                    - vs SPY: {comp['Bot vs SPY']}
+                    """)
+
+                    st.divider()
+
+                    st.markdown("## 📑 HISTORIAL DE TRADES")
+
+                    trades_df = BacktestRunner.get_trades_dataframe(metrics.get('trades', []))
+
+                    if not trades_df.empty:
+                        st.markdown("### Resumen por Ticker:")
+
+                        col_left, col_right = st.columns([1, 2])
+
+                        with col_left:
+                            ticker_summary = {}
+                            for _, trade in trades_df.iterrows():
+                                ticker = trade.get('Ticker', 'N/A')
+                                if ticker not in ticker_summary:
+                                    ticker_summary[ticker] = {'buys': 0, 'sells': 0}
+
+                                if 'BUY' in str(trade.get('Acción', '')):
+                                    ticker_summary[ticker]['buys'] += 1
+                                elif 'SELL' in str(trade.get('Acción', '')):
+                                    ticker_summary[ticker]['sells'] += 1
+
+                            for ticker, data in sorted(ticker_summary.items()):
+                                st.write(f"**{ticker}**: {data['buys']} compras, {data['sells']} ventas")
+
+                        with col_right:
+                            st.markdown("### Últimos 15 Trades:")
+                            st.dataframe(trades_df.tail(15), use_container_width=True, hide_index=True)
+
+                        with st.expander("📥 Descargar todos los trades"):
+                            csv = trades_df.to_csv(index=False)
+                            st.download_button(
+                                "⬇️ Descargar CSV",
+                                data=csv,
+                                file_name=f"backtest_trades_{date_range}.csv",
+                                mime="text/csv"
+                            )
+                    else:
+                        st.warning("⚠️ No hay trades en este período (bot no encontró oportunidades)")
+
+                    st.divider()
+
+                    st.markdown("## 💸 COSTOS DE OPERACIÓN")
+
+                    col_costs = st.columns(3)
+                    costs = formatted['Costos']
+
+                    with col_costs[0]:
+                        st.metric("% por Transacción", costs['% Transacción'])
+                    with col_costs[1]:
+                        st.metric("Total Pagado", costs['Total Pagado'])
+                    with col_costs[2]:
+                        st.metric("% del Capital", costs['% del Capital'])
+
+                else:
+                    st.error(f"❌ Error en simulación: {result['error']}")
 
 # ═══════════════════════════════════════════════════════════════
 # FOOTER

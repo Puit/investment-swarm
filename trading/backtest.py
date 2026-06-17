@@ -25,8 +25,42 @@ from agents.fundamental_agent import create_fundamental_agent
 from core.investment_decision_engine import InvestmentDecisionEngine
 from config import AVAILABLE_SECTORS, SELECTED_SECTORS
 
+import pickle
+from pathlib import Path
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("Backtest")
+
+
+# Cache directory para datos históricos
+CACHE_DIR = Path(__file__).parent.parent / "data" / "price_cache"
+CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _get_cache_path(ticker: str) -> Path:
+    """Obtiene la ruta del archivo de caché para un ticker"""
+    return CACHE_DIR / f"{ticker.upper()}_cache.pkl"
+
+
+def _load_cached_data(ticker: str):
+    """Carga datos del caché si existen"""
+    cache_path = _get_cache_path(ticker)
+    if cache_path.exists():
+        try:
+            with open(cache_path, 'rb') as f:
+                return pickle.load(f)
+        except Exception as e:
+            logger.warning(f"Error cargando caché de {ticker}: {e}")
+    return None
+
+
+def _save_cached_data(ticker: str, df) -> None:
+    """Guarda datos en caché"""
+    try:
+        cache_path = _get_cache_path(ticker)
+        with open(cache_path, 'wb') as f:
+            pickle.dump(df, f)
+    except Exception as e:
+        logger.warning(f"Error guardando caché de {ticker}: {e}")
 
 
 def extract_json(text: str) -> Optional[dict]:
@@ -335,6 +369,16 @@ class BacktestSimulator:
 
         for ticker in self.tickers:
             try:
+                # Intentar cargar del caché primero
+                cached_df = _load_cached_data(ticker)
+                if cached_df is not None and len(cached_df) > 0:
+                    mask = (cached_df.index.date >= self.data_start_date.date()) & (cached_df.index.date <= self.end_date.date())
+                    if mask.any():
+                        self.historical_data[ticker] = cached_df[mask]
+                        logger.info(f"  ✓ {ticker}: {len(cached_df[mask])} días (desde caché)")
+                        continue
+
+                # Descargar de Yahoo Finance
                 df = yf.download(
                     ticker,
                     start=self.data_start_date,
@@ -345,7 +389,8 @@ class BacktestSimulator:
                     df.columns = df.columns.get_level_values(0)
                 if len(df) > 0:
                     self.historical_data[ticker] = df
-                    logger.info(f"  ✓ {ticker}: {len(df)} días descargados")
+                    _save_cached_data(ticker, df)
+                    logger.info(f"  ✓ {ticker}: {len(df)} días (guardados en caché)")
                 else:
                     logger.warning(f"  ⚠️ {ticker}: sin datos")
             except Exception as e:

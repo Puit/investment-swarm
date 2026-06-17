@@ -12,6 +12,7 @@ from dotenv import load_dotenv
 import asyncio
 import json
 from concurrent.futures import ThreadPoolExecutor
+import subprocess
 
 # Setup
 load_dotenv()
@@ -19,6 +20,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from trading.paper_trading_engine import PaperTradingEngine, OPERATION_ORIGIN_MANUAL_DASHBOARD
 from core.analysis_storage import AnalysisStorage
+from core.programmed_orders import orders_manager
 from agents.fundamental_agent import create_fundamental_agent
 from agents.sentiment_agent import create_sentiment_agent
 from agents.technical_agent import create_technical_agent
@@ -40,9 +42,6 @@ st.set_page_config(page_title="Investment Swarm", page_icon="📈", layout="wide
 if "paper_engine" not in st.session_state:
     st.session_state.paper_engine = PaperTradingEngine(initial_capital=5000.0)
 
-if "current_ticker" not in st.session_state:
-    st.session_state.current_ticker = None
-
 if "live_broker" not in st.session_state and LIVE_BROKER_AVAILABLE:
     st.session_state.live_broker = Freedom24Broker()
     st.session_state.live_connected = st.session_state.live_broker.connect()
@@ -63,6 +62,32 @@ def fmt_money(x: float) -> str:
 
 def pnl_color(x: float) -> str:
     return "🟢" if x >= 0 else "🔴"
+
+def handle_programmed_order(ticker: str, quantity: int, action: str, current_price: float, analyses: dict) -> str:
+    """Maneja órdenes programadas"""
+    portfolio = paper_engine.get_portfolio_summary()
+    total_cost = quantity * current_price
+    cash = portfolio.get("cash", 0)
+
+    fund_score = analyses.get("fundamental", {}).get("score", 5)
+    sentiment = analyses.get("sentiment", {}).get("sentiment", "NEUTRO")
+    signal = analyses.get("technical", {}).get("signal", "HOLD")
+
+    is_bullish = (fund_score >= 7 and sentiment == "POSITIVO" and signal in ["BUY", "HOLD"]) or (fund_score >= 5 and sentiment != "NEGATIVO" and signal == "BUY")
+
+    if action == "BUY" and total_cost <= cash and is_bullish:
+        result = paper_engine.execute_operation_manual(ticker=ticker, action="BUY", quantity=quantity, price=current_price, note="Compra programada ejecutada")
+        if result["success"]:
+            paper_engine.save()
+            return f"✅ COMPRA EJECUTADA INMEDIATAMENTE\n{quantity} x {ticker} @ ${current_price:.2f}"
+        return f"❌ Error: {result['message']}"
+
+    status = "waiting_for_price" if total_cost > cash else "waiting_for_signal"
+    orders_manager.add_order(ticker=ticker, action=action, quantity=quantity, current_price=current_price, status=status, analyses=analyses)
+
+    if status == "waiting_for_price":
+        return f"⏳ ORDEN PROGRAMADA (dinero insuficiente)\nCosto: ${total_cost:,.2f} | Cash: ${cash:,.2f}\nDeficit: ${total_cost - cash:,.2f}\n\nEl scheduler monitoreará el precio"
+    return f"⏳ ORDEN PROGRAMADA (esperando análisis)\nAnálisis: F({fund_score}) + {sentiment} + {signal}\n\nEl scheduler reanalizar diariamente"
 
 def run_analysis_sync(ticker: str, analysis_type: str):
     """Ejecuta análisis de forma síncrona"""
@@ -178,10 +203,11 @@ st.divider()
 # TABS
 # ═══════════════════════════════════════════════════════════════
 
-tab1, tab2, tab3 = st.tabs([
+tab1, tab2, tab3, tab4 = st.tabs([
     "💰 Paper Trading",
     "🔴 Live Trading",
-    "📊 Análisis"
+    "📊 Análisis",
+    "🧪 Tests & Simulation"
 ])
 
 # ─────────────────────────────────────────────────────────────
@@ -214,253 +240,9 @@ with tab1:
                 }
                 for p in positions
             ])
-            st.dataframe(df, width="stretch", hide_index=True)
+            st.dataframe(df, use_container_width=True, hide_index=True)
         else:
             st.info("Sin posiciones")
-
-    st.divider()
-
-    # ═══════════════════════════════════════════════════════════════
-    # BUSCADOR DE TICKERS Y ANÁLISIS
-    # ═══════════════════════════════════════════════════════════════
-
-    st.subheader("🔍 Buscar Ticker para Invertir")
-
-    col1, col2 = st.columns([3, 1])
-    with col1:
-        search_ticker = st.text_input("Ingresa el ticker:", placeholder="Ej: AAPL, MSFT, GOOG").upper()
-    with col2:
-        search_btn = st.button("🔎 Buscar", width="stretch")
-
-    # Guardar ticker en session state para que persista
-    if search_ticker and search_btn:
-        st.session_state.current_ticker = search_ticker
-
-    if st.session_state.current_ticker:
-        ticker = st.session_state.current_ticker
-        with st.spinner(f"Analizando {ticker}..."):
-            # Obtener análisis guardados o ejecutar nuevos
-            existing = AnalysisStorage.get_analysis(ticker)
-
-            if not existing or "fundamental" not in existing:
-                st.info("Sin análisis previos. Ejecutando análisis completo...")
-
-                # Ejecutar 3 análisis
-                all_analyses = {}
-                for analysis_type in ["fundamental", "sentiment", "technical"]:
-                    with st.spinner(f"  {analysis_type.capitalize()}..."):
-                        result = run_analysis_sync(ticker, analysis_type)
-                        if result:
-                            AnalysisStorage.save_analysis(ticker, analysis_type, result)
-                            all_analyses[analysis_type] = result
-
-            else:
-                all_analyses = {
-                    "fundamental": existing.get("fundamental", {}).get("data", {}),
-                    "sentiment": existing.get("sentiment", {}).get("data", {}),
-                    "technical": existing.get("technical", {}).get("data", {}),
-                }
-
-        # ═══════════════════════════════════════════════════════════════
-        # MOSTRAR INFORME COMPLETO
-        # ═══════════════════════════════════════════════════════════════
-
-        st.markdown(f"### 📊 Análisis Completo: {ticker}")
-
-        col1, col2, col3 = st.columns(3)
-
-        with col1:
-            fund = all_analyses.get("fundamental", {})
-            st.markdown(f"**📊 Fundamental**")
-            st.metric("Score", f"{fund.get('score', 'N/A')}/10")
-            st.metric("Conf", f"{fund.get('confidence', 'N/A')}%")
-            st.metric("Riesgo", fund.get("risk_level", "N/A"))
-
-        with col2:
-            sent = all_analyses.get("sentiment", {})
-            sentiment = sent.get("sentiment", "N/A")
-            color_sent = "🟢" if sentiment == "POSITIVO" else "🔴" if sentiment == "NEGATIVO" else "🟡"
-            st.markdown(f"**📰 Sentimiento**")
-            st.metric("Sent", f"{color_sent} {sentiment}")
-            st.metric("Conf", f"{sent.get('confidence', 'N/A')}%")
-
-        with col3:
-            tech = all_analyses.get("technical", {})
-            signal = tech.get("signal", "N/A")
-            color_tech = "🟢" if signal == "BUY" else "🔴" if signal == "SELL" else "🟡"
-            st.markdown(f"**📈 Técnico**")
-            st.metric("Signal", f"{color_tech} {signal}")
-            st.metric("Conf", f"{tech.get('confidence', 'N/A')}%")
-
-        st.divider()
-
-        # ═══════════════════════════════════════════════════════════════
-        # RECOMENDACIÓN FINAL
-        # ═══════════════════════════════════════════════════════════════
-
-        # Calcular recomendación final basada en los 3 análisis
-        fund_score = all_analyses.get("fundamental", {}).get("score", 5)
-        sentiment_val = 1 if all_analyses.get("sentiment", {}).get("sentiment") == "POSITIVO" else -1 if all_analyses.get("sentiment", {}).get("sentiment") == "NEGATIVO" else 0
-        signal = all_analyses.get("technical", {}).get("signal", "HOLD")
-
-        if fund_score >= 7 and sentiment_val >= 0 and signal in ["BUY", "HOLD"]:
-            recommendation = "🟢 COMPRAR"
-            rec_color = "success"
-        elif fund_score >= 5 and sentiment_val >= 0 and signal == "BUY":
-            recommendation = "🟡 CONSIDERAR COMPRA"
-            rec_color = "info"
-        elif fund_score < 5 or sentiment_val < 0 or signal == "SELL":
-            recommendation = "🔴 VENDER / NO COMPRAR"
-            rec_color = "error"
-        else:
-            recommendation = "⚪ MANTENER / ESPERAR"
-            rec_color = "warning"
-
-        st.markdown(f"### {recommendation}")
-
-        # ═══════════════════════════════════════════════════════════════
-        # MÓDULO DE COMPRA/VENTA
-        # ═══════════════════════════════════════════════════════════════
-
-        # Check si ya tenemos posición
-        has_position = any(p["ticker"] == ticker for p in positions)
-
-        # Obtener precio actual del ticker
-        try:
-            import yfinance as yf
-            ticker_data = yf.Ticker(ticker)
-            current_price = ticker_data.info.get("currentPrice") or ticker_data.info.get("regularMarketPrice")
-        except:
-            current_price = next((p["current_price"] for p in positions if p["ticker"] == ticker), None)
-
-        st.subheader("💹 Módulo de Compra/Venta")
-
-        col_qty, col_total, col_buttons, col_status = st.columns([1.5, 1.5, 2, 1.5])
-
-        # COLUMNA 1: CANTIDAD
-        with col_qty:
-            st.markdown(f"**Cantidad a comprar**")
-            if current_price:
-                st.markdown(f"(${current_price:.2f} por acción)")
-            else:
-                st.markdown("(Precio no disponible)")
-
-            qty_buy = st.number_input(
-                "Cantidad:",
-                min_value=1,
-                value=10,
-                step=1,
-                label_visibility="collapsed"
-            )
-
-        # COLUMNA 2: TOTAL Y CASH
-        with col_total:
-            st.markdown(f"**Total a invertir**")
-            if current_price:
-                total_cost = qty_buy * current_price
-                cash_available = portfolio.get("cash", 0)
-                can_afford = total_cost <= cash_available
-
-                color = "🟢" if can_afford else "🔴"
-                st.metric("", f"${total_cost:,.2f}", label_visibility="collapsed")
-
-                if not can_afford:
-                    st.markdown(f"<span style='color:red;font-size:11px'>⚠️ Insuficiente cash</span>", unsafe_allow_html=True)
-            else:
-                st.markdown("N/A")
-
-        # COLUMNA 3: BOTONES (APILADOS)
-        with col_buttons:
-            st.markdown("**Acciones**")
-
-            if st.button("⚙️ PROGRAMAR", width="stretch", key="btn_program"):
-                st.info("🔄 Programado: El bot analizará diariamente y operará automáticamente")
-
-            if st.button("🟢 COMPRAR", width="stretch", type="primary", key="btn_buy"):
-                if current_price and qty_buy * current_price <= portfolio.get("cash", 0):
-                    # Ejecutar compra en el engine
-                    result = paper_engine.execute_operation_manual(
-                        ticker=ticker,
-                        action="BUY",
-                        quantity=qty_buy,
-                        price=current_price,
-                        note=f"Compra manual desde dashboard - Recomendación: {recommendation}"
-                    )
-                    if result["success"]:
-                        st.success(f"✓ Compra ejecutada: {qty_buy} x {ticker} @ ${current_price:.2f}")
-                        paper_engine.save()
-                        st.rerun()
-                    else:
-                        st.error(f"❌ Error en compra: {result['message']}")
-                else:
-                    st.error("❌ Cash insuficiente para esta compra")
-
-        # COLUMNA 4: STATUS
-        with col_status:
-            st.markdown("**Posición**")
-            if has_position:
-                position_qty = next((p["qty"] for p in positions if p["ticker"] == ticker), 0)
-                st.markdown(f"🟢 Tienes {int(position_qty)} acc.")
-            else:
-                st.markdown("⚪ Sin posición")
-
-        # Si tiene posición, mostrar opción de venta
-        if has_position:
-            st.divider()
-            st.subheader("🔴 Módulo de Venta")
-
-            col_qty_sell, col_total_sell, col_buttons_sell, col_status_sell = st.columns([1.5, 1.5, 2, 1.5])
-
-            position_qty = next((p["qty"] for p in positions if p["ticker"] == ticker), 0)
-
-            with col_qty_sell:
-                st.markdown(f"**Cantidad a vender**")
-                if current_price:
-                    st.markdown(f"(${current_price:.2f} por acción)")
-                else:
-                    st.markdown("(Precio no disponible)")
-
-                qty_sell = st.number_input(
-                    "Cantidad Venta:",
-                    min_value=1,
-                    max_value=int(position_qty) if position_qty > 0 else 1,
-                    value=min(5, int(position_qty)) if position_qty > 0 else 1,
-                    step=1,
-                    label_visibility="collapsed"
-                )
-
-            with col_total_sell:
-                st.markdown(f"**Total a recibir**")
-                if current_price:
-                    total_sell = qty_sell * current_price
-                    st.metric("", f"${total_sell:,.2f}", label_visibility="collapsed")
-                else:
-                    st.markdown("N/A")
-
-            with col_buttons_sell:
-                st.markdown("**Acciones**")
-                if st.button("⚙️ PROGRAMAR VENTA", width="stretch", key="btn_program_sell"):
-                    st.info("🔄 Venta programada automáticamente")
-
-                if st.button("🔴 VENDER", width="stretch", type="primary", key="btn_sell"):
-                    # Ejecutar venta en el engine
-                    result = paper_engine.execute_operation_manual(
-                        ticker=ticker,
-                        action="SELL",
-                        quantity=qty_sell,
-                        price=current_price,
-                        note=f"Venta manual desde dashboard"
-                    )
-                    if result["success"]:
-                        st.success(f"✓ Venta ejecutada: {qty_sell} x {ticker} @ ${current_price:.2f}")
-                        paper_engine.save()
-                        st.rerun()
-                    else:
-                        st.error(f"❌ Error en venta: {result['message']}")
-
-            with col_status_sell:
-                st.markdown("**Posición**")
-                st.markdown(f"🟢 Tienes {int(position_qty)} acc.")
 
 # ─────────────────────────────────────────────────────────────
 # TAB 2: LIVE TRADING
@@ -488,7 +270,7 @@ with tab2:
                 }
                 for p in positions
             ])
-            st.dataframe(df, width="stretch", hide_index=True)
+            st.dataframe(df, use_container_width=True, hide_index=True)
     else:
         st.warning("⚠️ No disponible - Configura Freedom24 en .env (FREEDOM24_API_KEY, etc.)")
 
@@ -506,7 +288,7 @@ with tab3:
         ticker_input = st.text_input("Ticker:", placeholder="Ej: AAPL").upper()
 
     with col2:
-        if st.button("📊 Fundamental", key="btn_fund", width="stretch"):
+        if st.button("📊 Fundamental", key="btn_fund", use_container_width=True):
             if ticker_input:
                 with st.spinner(f"Analizando {ticker_input}..."):
                     result = run_analysis_sync(ticker_input, "fundamental")
@@ -518,7 +300,7 @@ with tab3:
                 st.error("Ingresa un ticker")
 
     with col3:
-        if st.button("📰 Sentimiento", key="btn_sent", width="stretch"):
+        if st.button("📰 Sentimiento", key="btn_sent", use_container_width=True):
             if ticker_input:
                 with st.spinner(f"Analizando {ticker_input}..."):
                     result = run_analysis_sync(ticker_input, "sentiment")
@@ -530,7 +312,7 @@ with tab3:
                 st.error("Ingresa un ticker")
 
     with col4:
-        if st.button("📈 Técnico", key="btn_tech", width="stretch"):
+        if st.button("📈 Técnico", key="btn_tech", use_container_width=True):
             if ticker_input:
                 with st.spinner(f"Analizando {ticker_input}..."):
                     result = run_analysis_sync(ticker_input, "technical")
@@ -542,7 +324,7 @@ with tab3:
                 st.error("Ingresa un ticker")
 
     with col5:
-        if st.button("🔄 Todos", key="btn_all", width="stretch"):
+        if st.button("🔄 Todos", key="btn_all", use_container_width=True):
             if ticker_input:
                 for analysis_type in ["fundamental", "sentiment", "technical"]:
                     with st.spinner(f"Analizando {ticker_input} - {analysis_type}..."):
@@ -586,7 +368,7 @@ with tab3:
         df = pd.DataFrame(rows)
 
         # Mostrar tabla
-        st.dataframe(df, width="stretch", hide_index=True)
+        st.dataframe(df, use_container_width=True, hide_index=True)
 
         # Hacer tabla interactiva - Detalles del Análisis
         st.subheader("📌 Detalles del Análisis")
@@ -647,41 +429,4 @@ with tab3:
                             st.write(catalysts if isinstance(catalysts, str) else ", ".join(catalysts))
 
                         with st.expander("📝 Resumen"):
-                            st.write(sent_data.get("summary", "Sin información"))
-
-            # TÉCNICO
-            with col3:
-                if "technical" in ticker_data:
-                    tech_data = ticker_data["technical"]["data"]
-                    with st.container():
-                        st.markdown(f"### 📈 Técnico")
-
-                        signal = tech_data.get("signal", "HOLD")
-
-                        # Color según signal
-                        if signal == "BUY":
-                            color = "🟢"
-                        elif signal == "SELL":
-                            color = "🔴"
-                        else:
-                            color = "🟡"
-
-                        st.metric("Signal", f"{color} {signal}", delta=None)
-                        st.markdown(f"**Confianza:** {tech_data.get('confidence', 'N/A')}%")
-                        st.markdown(f"**Soporte:** ${tech_data.get('support', 'N/A')}")
-                        st.markdown(f"**Resistencia:** ${tech_data.get('resistance', 'N/A')}")
-
-                        with st.expander("📝 Análisis"):
-                            st.write(tech_data.get("summary", "Sin información"))
-    else:
-        st.info("No hay análisis aún. Realiza algunos análisis para verlos aquí.")
-
-# ═══════════════════════════════════════════════════════════════
-# FOOTER
-# ═══════════════════════════════════════════════════════════════
-
-st.divider()
-st.markdown("""
-**Investment Swarm Dashboard v3** | Paper + Live Trading
-Powered by CrewAI + Ollama + Interactive Brokers
-""")
+                            st.write(sent_dat
