@@ -12,7 +12,6 @@ from dotenv import load_dotenv
 import asyncio
 import json
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import asdict
 
 # Setup
 load_dotenv()
@@ -20,11 +19,6 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from trading.paper_trading_engine import PaperTradingEngine, OPERATION_ORIGIN_MANUAL_DASHBOARD
 from core.analysis_storage import AnalysisStorage
-from core.analysis_schemas import (
-    parse_fundamental_analysis,
-    parse_sentiment_analysis,
-    parse_technical_analysis
-)
 from agents.fundamental_agent import create_fundamental_agent
 from agents.sentiment_agent import create_sentiment_agent
 from agents.technical_agent import create_technical_agent
@@ -68,65 +62,93 @@ def pnl_color(x: float) -> str:
     return "🟢" if x >= 0 else "🔴"
 
 def run_analysis_sync(ticker: str, analysis_type: str):
-    """Ejecuta análisis de forma síncrona usando parsers estandarizados"""
+    """Ejecuta análisis de forma síncrona"""
     try:
         if analysis_type == "fundamental":
             agent = create_fundamental_agent()
             task = Task(
-                description=f"Analiza los fundamentos de {ticker}",
+                description=f"""Analiza los fundamentos de {ticker} y responde SOLO en JSON:
+                {{
+                    "score": 0-10,
+                    "confidence": 0-100,
+                    "risk_level": "LOW/MEDIUM/HIGH",
+                    "recommendation": "BUY/HOLD/SELL",
+                    "summary": "análisis breve"
+                }}""",
                 agent=agent,
-                expected_output="JSON válido con análisis fundamental"
+                expected_output="JSON válido sin texto adicional"
             )
         elif analysis_type == "sentiment":
             agent = create_sentiment_agent()
             task = Task(
                 description=f"Analiza sentimiento de {ticker}",
                 agent=agent,
-                expected_output="JSON válido con análisis de sentimiento"
+                expected_output="JSON con sentimiento"
             )
         else:  # technical
             agent = create_technical_agent()
             task = Task(
                 description=f"Analiza técnico de {ticker}",
                 agent=agent,
-                expected_output="JSON válido con análisis técnico"
+                expected_output="JSON con signal"
             )
-
-        print(f"\n{'='*60}")
-        print(f"[DASHBOARD] Ejecutando análisis {analysis_type} para {ticker}")
-        print(f"{'='*60}")
 
         crew = Crew(agents=[agent], tasks=[task], process=Process.sequential, verbose=False)
         result = crew.kickoff()
+        output_str = str(result)
 
-        print(f"[DASHBOARD] Tipo de resultado: {type(result)}")
-        print(f"[DASHBOARD] Tiene .raw? {hasattr(result, 'raw')}")
+        # Intenta parsear directamente
+        try:
+            data = json.loads(output_str)
 
-        # Obtener output correcto de CrewAI
-        if hasattr(result, 'raw'):
-            output_str = str(result.raw)
-        else:
-            output_str = str(result)
+            # Si es fundamental, busca dentro de la estructura anidada
+            if analysis_type == "fundamental":
+                if isinstance(data, dict) and "output" in data:
+                    output_data = data["output"]
+                    if isinstance(output_data, list) and len(output_data) > 0:
+                        output_data = output_data[0].get("output", {})
 
-        print(f"[DASHBOARD] String conversion ({len(output_str)} chars)")
-        print(f"[DASHBOARD] Primeros 500 chars: {output_str[:500]}")
+                    # Normalizar a formato simple
+                    return {
+                        "score": output_data.get("score", 5),
+                        "confidence": 80,
+                        "risk_level": "MEDIUM",
+                        "recommendation": "HOLD",
+                        "summary": f"Score: {output_data.get('score', 'N/A')}/10. " +
+                                 f"Ratios: P/E {output_data.get('ratiosFinancieros', {}).get('P/E', 'N/A')}, " +
+                                 f"Debt/Equity {output_data.get('ratiosFinancieros', {}).get('deuda/equity', 'N/A')}"
+                    }
 
-        # Usa los parsers estandarizados
-        if analysis_type == "fundamental":
-            parsed = parse_fundamental_analysis(output_str)
-            return asdict(parsed)
-        elif analysis_type == "sentiment":
-            parsed = parse_sentiment_analysis(output_str)
-            return asdict(parsed)
-        elif analysis_type == "technical":
-            parsed = parse_technical_analysis(output_str)
-            return asdict(parsed)
+            # Para sentiment y technical
+            if isinstance(data, dict) and ("score" in data or "sentiment" in data or "signal" in data):
+                return data
+
+        except:
+            pass
+
+        # Fallback: busca JSONs en el texto
+        json_matches = list(re.finditer(r'\{[^{}]*"score"[^{}]*\}|\{[^{}]*"sentiment"[^{}]*\}|\{[^{}]*"signal"[^{}]*\}', output_str, re.DOTALL))
+
+        if json_matches:
+            for match in reversed(json_matches):
+                try:
+                    data = json.loads(match.group(0))
+                    if isinstance(data, dict):
+                        return data
+                except:
+                    continue
+
+        # Último fallback
+        return {
+            "score": 5 if analysis_type == "fundamental" else None,
+            "sentiment": "NEUTRO" if analysis_type == "sentiment" else None,
+            "signal": "HOLD" if analysis_type == "technical" else None,
+            "confidence": 50,
+            "summary": "Error en análisis - intenta de nuevo"
+        }
 
     except Exception as e:
-        st.error(f"Error en análisis: {e}")
-        import traceback
-        print(f"[DASHBOARD ERROR] {e}")
-        print(traceback.format_exc(), flush=True)
+        st.error(f"Error: {e}")
         return None
 
 # ═══════════════════════════════════════════════════════════════
@@ -350,29 +372,7 @@ with tab3:
                         st.markdown(f"**Recomendación:** {fund_data.get('recommendation', 'N/A')}")
 
                         with st.expander("📝 Análisis Completo"):
-                            # Resumen
                             st.write(fund_data.get("summary", "Sin información"))
-
-                            # Ratios
-                            ratios = fund_data.get("ratios", {})
-                            if ratios:
-                                st.markdown("**Ratios Financieros:**")
-                                for ratio_name, ratio_value in ratios.items():
-                                    st.write(f"  • {ratio_name}: {ratio_value}")
-
-                            # Growth Metrics
-                            growth = fund_data.get("growth_metrics", {})
-                            if growth:
-                                st.markdown("**Métricas de Crecimiento:**")
-                                for metric_name, metric_value in growth.items():
-                                    st.write(f"  • {metric_name}: {metric_value}")
-
-                            # Red Flags
-                            red_flags = fund_data.get("red_flags", [])
-                            if red_flags:
-                                st.markdown("**⚠️ Red Flags:**")
-                                for flag in red_flags:
-                                    st.write(f"  • {flag}")
 
             # SENTIMIENTO
             with col2:

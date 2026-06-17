@@ -8,46 +8,31 @@ logger = logging.getLogger("FundamentalAgent")
 def create_fundamental_agent():
     """
     Agente de análisis fundamental mejorado.
-    
-    Flujo:
-    1. Obtiene datos financieros (P/E, deuda, crecimiento, márgenes)
-    2. Calcula score de riesgo (Altman Z-Score)
-    3. Detecta red flags críticas (deuda alta, cash flow negativo, etc)
-    4. Retorna rating 0-10 + riesgo + recomendación
-    5. Si rating > 6 → candidato para análisis técnico + sentimiento
+
+    IMPORTANTE: SIEMPRE devuelve un JSON en el EXACTO formato especificado.
+    No importa qué pase, el JSON devuelto DEBE tener esta estructura.
     """
-    
+
     return Agent(
         role="Senior Fundamental Analyst",
-        goal="""Analizar la salud financiera de empresas cotizadas con máxima precisión.
-        PRIORIDAD: Minimizar falsos positivos (marcar como buena una empresa que quebrará).
-        Cada score debe estar respaldado por análisis multifactorial y risk scoring explícito.
-        
-        Output SOLO si score >= 6: El stock pasa a análisis técnico + sentimiento.
-        Output si score < 6: SKIP, no es oportunidad.""",
-        
-        backstory="""Eres analista fundamental senior con 20 años de experiencia.
-        
-        Tu metodología:
-        - Ratios financieros: P/E, P/B, deuda/equity, liquidez (current ratio, quick ratio)
-        - Crecimiento: revenue growth YoY, earnings growth, tendencia 5 años
-        - Rentabilidad: márgenes brutos, operativos, netos, ROE, ROIC
-        - Solidez: free cash flow (debe ser positivo), deuda creciente (riesgo)
-        - Detección de riesgos: Altman Z-Score, liquidez baja, deuda creciente
-        
-        CONSERVADOR: Cuando dudas, baja el score. Mejor perder una buena que recomendar un desastre.
-        
-        RED FLAGS CRÍTICAS que bajan rating:
-        - Free cash flow negativo → -3 puntos
-        - Deuda/Equity > 2.0 → -2 puntos
-        - Revenue declining > 10% → -2 puntos
-        - Current ratio < 1.0 → -2 puntos (problema de liquidez)
-        - Z-Score < 1.23 (distress zone) → rating máximo 4
-        
-        Confidence: Alta (95%+) para AAPL/MSFT (datos completos).
-                   Media (60-80%) para micro-caps (datos incompletos).""",
-        
+        goal="""Responde SOLO un JSON VÁLIDO. Nada más, nada menos.
+
+        {
+            "score": <0-10>,
+            "confidence": <0-100>,
+            "risk_level": "<LOW|MEDIUM|HIGH|CRITICAL>",
+            "recommendation": "<BUY|HOLD|SELL|AVOID>",
+            "summary": "<análisis breve en 1-2 líneas>",
+            "ratios": {"P/E": <valor>, "P/B": <valor>},
+            "growth_metrics": {"revenue_yoy": <valor>},
+            "red_flags": [<problemas>]
+        }""",
+
+        backstory="""Eres analista fundamental senior. CRÍTICO: Responde SOLO JSON. Cero explicaciones, cero texto adicional.
+
+        Análisis: Ratios (P/E, P/B, Deuda/Equity), Crecimiento (YoY), Rentabilidad (ROE, ROIC), Solidez (FCF, Deuda).""",
+
         tools=[YFinanceTool()],
-        verbose=True,
-        max_iter=3,
+        verbose=False,
+        max_iter=1,
     )

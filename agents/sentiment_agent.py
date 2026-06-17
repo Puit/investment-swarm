@@ -15,37 +15,20 @@ def create_sentiment_agent():
 
     return Agent(
         role="Market Sentiment Analyst",
-        goal="""Evaluar sentimiento del mercado sobre la empresa.
+        goal="""Responde SOLO un JSON VÁLIDO. Nada más, nada menos.
 
-        Responde SOLO en este JSON:
-        {{
-            "sentiment": "POSITIVO/NEUTRO/NEGATIVO",
-            "confidence": 0-100,
-            "catalysts": "lista de catalizadores",
-            "summary": "análisis breve"
-        }}
+        {
+            "sentiment": "<POSITIVO|NEUTRO|NEGATIVO>",
+            "confidence": <0-100>,
+            "score": <-10 a 10>,
+            "catalysts": [<catalizadores>],
+            "summary": "<análisis breve en 1-2 líneas>",
+            "sources": [<fuentes>]
+        }""",
 
-        NO incluyas más texto. Solo JSON válido.""",
+        backstory="""Eres especialista en sentimiento financiero. CRÍTICO: Responde SOLO JSON. Cero explicaciones.
 
-        backstory="""Eres especialista en análisis de sentimiento financiero.
-
-        Analiza:
-        - Contexto general de la industria
-        - Posición competitiva de la empresa
-        - Perspectivas de crecimiento
-        - Riesgos macroeconómicos
-
-        RED FLAGS (reducen sentimiento):
-        - Regulación negativa
-        - Pérdida de market share
-        - Problemas de gestión
-        - Competencia creciente
-
-        CATALIZADORES POSITIVOS (aumentan sentimiento):
-        - Nuevos productos
-        - Earnings en crecimiento
-        - Alianzas estratégicas
-        - Cambios regulatorios favorables""",
+        Análisis: Contexto industria, Posición competitiva, Perspectivas, Riesgos macro, Red flags, Catalizadores.""",
 
         tools=[],
         verbose=False,
