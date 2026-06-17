@@ -1,4 +1,4 @@
-"""Quick strategy validation test"""
+"""Quick strategy validation test — compara universos de tickers"""
 import sys
 import logging
 
@@ -9,47 +9,98 @@ for lib in ('yfinance', 'openai', 'httpx', 'crewai', 'Backtest', 'DecisionEngine
 
 from trading.backtest_runner import BacktestRunner
 
-TICKERS = ['GOOG', 'MSFT']
 CAPITAL = 10_000
 
-def run(year, **kwargs):
-    def cb(msg): print(f'  >> {msg}')
+UNIVERSES = {
+    'BASE (GOOG+MSFT)':       ['GOOG', 'MSFT'],
+    'AMPLIADO (5 tickers)':   ['GOOG', 'MSFT', 'NVDA', 'META', 'AMZN'],
+    'AMPLIADO+ (8 tickers)':  ['GOOG', 'MSFT', 'NVDA', 'META', 'AMZN', 'AAPL', 'TSLA', 'AVGO'],
+}
+
+def run(year, tickers, **kwargs):
     r = BacktestRunner.run_backtest(
-        year, initial_capital=CAPITAL, tickers=TICKERS,
-        progress_callback=cb, **kwargs
+        year, initial_capital=CAPITAL, tickers=tickers,
+        progress_callback=None, **kwargs
     )
     if not r['success']:
-        print(f'ERROR {year}:', r.get('error'))
-        return
+        return None
     m = r['metrics']
     p = m['performance']
     c = m['comparison']
     t = m['trading']
-    reg = m.get('regime', {})
-    days = reg.get('days', {})
-    total = max(sum(days.values()), 1)
-
-    beats_spy = c['bot_return_pct'] > c['spy_return_pct']
-    beats_bnh = c['bot_return_pct'] > c['buyhold_return_pct']
-    mark = ('SUPERA SPY+BH' if beats_spy and beats_bnh
-            else 'SUPERA SPY' if beats_spy
-            else 'BAJO SPY')
-
-    print()
-    print(f'=== {year} === [{mark}]')
-    print(f'  Bot:   {p["total_return_pct"]:+.2f}%   DD={p["max_drawdown_pct"]:.1f}%  Sharpe={p["sharpe_ratio"]:.2f}')
-    print(f'  SPY:   {c["spy_return_pct"]:+.2f}%')
-    print(f'  B&H:   {c["buyhold_return_pct"]:+.2f}%')
-    print(f'  Buys/Sells: {t["total_buys"]}/{t["total_sells"]}  StopLoss={t["stop_loss_count"]}  WinRate={t["win_rate_pct"]:.0f}%')
-    if t.get('circuit_breaker_paused_days', 0):
-        print(f'  CB paused: {t["circuit_breaker_paused_days"]} days')
-    if days:
-        parts = [f'{k}={v}d({v/total*100:.0f}%)' for k, v in days.items() if v > 0]
-        print(f'  Regime: {" ".join(parts)}')
+    return {
+        'bot':     p['total_return_pct'],
+        'spy':     c['spy_return_pct'],
+        'bnh':     c['buyhold_return_pct'],
+        'buys':    t['total_buys'],
+        'sells':   t['total_sells'],
+        'sl':      t['stop_loss_count'],
+        'winrate': t['win_rate_pct'],
+        'dd':      p['max_drawdown_pct'],
+        'sharpe':  p['sharpe_ratio'],
+    }
 
 from datetime import date as ddate
 
-for yr in ['2020', '2021', '2022', '2023', '2024', '2025']:
-    run(yr)
+YEARS = ['2020', '2021', '2022', '2023', '2024', '2025']
+CUSTOM = dict(custom_start=ddate(2020, 1, 1), custom_end=ddate(2026, 4, 30))
 
-run('Custom', custom_start=ddate(2020, 1, 1), custom_end=ddate(2026, 4, 30))
+results = {}  # {universe_name: {year: metrics}}
+
+for uname, tickers in UNIVERSES.items():
+    print(f'\n{"="*60}')
+    print(f'  {uname}  →  {tickers}')
+    print(f'{"="*60}')
+    results[uname] = {}
+    for yr in YEARS:
+        sys.stdout.write(f'  {yr}... ')
+        sys.stdout.flush()
+        m = run(yr, tickers)
+        if m:
+            results[uname][yr] = m
+            beats_spy = m['bot'] > m['spy']
+            beats_bnh = m['bot'] > m['bnh']
+            mark = ('✓✓' if beats_spy and beats_bnh
+                    else '✓ ' if beats_spy
+                    else '✗ ')
+            print(f'Bot {m["bot"]:+.1f}%  SPY {m["spy"]:+.1f}%  B&H {m["bnh"]:+.1f}%  {mark}  '
+                  f'(SL={m["sl"]}  DD={m["dd"]:.0f}%)')
+        else:
+            print('ERROR')
+    sys.stdout.write('  Custom... ')
+    sys.stdout.flush()
+    m = run('Custom', tickers, **CUSTOM)
+    if m:
+        results[uname]['Custom'] = m
+        beats_spy = m['bot'] > m['spy']
+        beats_bnh = m['bot'] > m['bnh']
+        mark = ('✓✓' if beats_spy and beats_bnh else '✓ ' if beats_spy else '✗ ')
+        print(f'Bot {m["bot"]:+.1f}%  SPY {m["spy"]:+.1f}%  B&H {m["bnh"]:+.1f}%  {mark}  '
+              f'(SL={m["sl"]}  DD={m["dd"]:.0f}%)')
+
+# ── Resumen comparativo ──────────────────────────────────────────────
+print(f'\n{"="*60}')
+print('  RESUMEN COMPARATIVO')
+print(f'{"="*60}')
+print(f'  {"Año":<8}', end='')
+for uname in UNIVERSES:
+    short = uname.split('(')[0].strip()[:10]
+    print(f'  {short:<12}', end='')
+print()
+print(f'  {"-"*8}', end='')
+for _ in UNIVERSES:
+    print(f'  {"-"*12}', end='')
+print()
+
+for yr in YEARS + ['Custom']:
+    print(f'  {yr:<8}', end='')
+    for uname in UNIVERSES:
+        m = results.get(uname, {}).get(yr)
+        if m:
+            beats_spy = m['bot'] > m['spy']
+            beats_bnh = m['bot'] > m['bnh']
+            mark = '✓✓' if beats_spy and beats_bnh else '✓' if beats_spy else '✗'
+            print(f'  {m["bot"]:+.1f}% {mark:<3}     ', end='')
+        else:
+            print(f'  {"---":<12}', end='')
+    print()
