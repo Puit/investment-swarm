@@ -54,16 +54,33 @@ class BacktestRunner:
 
     @staticmethod
     def clear_all_cache() -> Tuple[bool, str]:
-        """Elimina todo el caché de datos históricos"""
+        """Elimina todo el caché: precios históricos + análisis fundamentales"""
+        cleared = []
+        errors = []
+
+        # 1. Caché de precios (pickle files)
         try:
             if CACHE_DIR.exists():
                 shutil.rmtree(CACHE_DIR)
                 CACHE_DIR.mkdir(parents=True, exist_ok=True)
-                return True, f"✅ Caché eliminado: {CACHE_DIR}"
-            else:
-                return True, "ℹ️ No hay caché para eliminar"
+                cleared.append("precios históricos")
         except Exception as e:
-            return False, f"❌ Error al eliminar caché: {e}"
+            errors.append(f"precios: {e}")
+
+        # 2. Caché de fundamentales (JSON del LLM)
+        try:
+            fundamental_cache = CACHE_DIR.parent / "fundamental_cache.json"
+            if fundamental_cache.exists():
+                fundamental_cache.unlink()
+                cleared.append("análisis fundamental")
+        except Exception as e:
+            errors.append(f"fundamental: {e}")
+
+        if errors:
+            return False, f"❌ Errores al eliminar: {', '.join(errors)}"
+        if cleared:
+            return True, f"✅ Caché eliminado: {', '.join(cleared)}"
+        return True, "ℹ️ No había caché para eliminar"
 
     @staticmethod
     def get_cache_size() -> str:

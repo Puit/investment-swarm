@@ -35,6 +35,28 @@ logger = logging.getLogger("Backtest")
 CACHE_DIR = Path(__file__).parent.parent / "data" / "price_cache"
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
+# Cache persistente de fundamentales (evita re-llamar al LLM entre runs del mismo test)
+FUNDAMENTAL_CACHE_FILE = Path(__file__).parent.parent / "data" / "fundamental_cache.json"
+
+
+def _load_fundamental_cache() -> dict:
+    if FUNDAMENTAL_CACHE_FILE.exists():
+        try:
+            with open(FUNDAMENTAL_CACHE_FILE, "r") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {}
+
+
+def _save_fundamental_cache(cache: dict) -> None:
+    try:
+        FUNDAMENTAL_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with open(FUNDAMENTAL_CACHE_FILE, "w") as f:
+            json.dump(cache, f, indent=2)
+    except Exception as e:
+        logger.warning(f"No se pudo guardar caché de fundamentales: {e}")
+
 
 def _get_cache_path(ticker: str) -> Path:
     """Obtiene la ruta del archivo de caché para un ticker"""
@@ -105,12 +127,24 @@ CONVICTION_ORDER = {"LOW": 0, "MEDIUM": 1, "HIGH": 2, "VERY_HIGH": 3}
 
 HEDGE_TICKER = "PSQ"
 HEDGE_REGIMES = ("BEARISH", "BEAR_RALLY")
-HEDGE_ALLOCATION_PCT = 0.35  # Más agresivo en mercados bajistas
+HEDGE_ALLOCATION_PCT = 0.40  # 40 % en bajistas — hedge más agresivo
 HEDGE_EXIT_PARAMS = {
-    "stop_loss_pct": -8,
-    "take_profit_pct": 25,
-    "trailing_trigger_pct": 12,
-    "trailing_stop_pct": 8,
+    "stop_loss_pct": -12,   # Era -8: más espacio para respirar (crash rápido)
+    "take_profit_pct": 30,
+    "trailing_trigger_pct": 15,
+    "trailing_stop_pct": 10,
+}
+
+# Períodos mínimos de espera entre compras del mismo ticker (días naturales)
+BUY_FREQUENCY_LIMIT_DAYS = 15      # Mín. días entre compras del mismo ticker
+BUY_FREQUENCY_DEEP_DIP_RSI = 45    # RSI por debajo de este umbral: compra adicional permitida antes del límite
+
+# Cooldowns tras stop loss (días naturales, dependientes del régimen)
+STOP_LOSS_COOLDOWN = {
+    "BULLISH":    14,   # Corrección temporal → re-entrada más rápida
+    "NEUTRAL":    25,
+    "BEAR_RALLY": 45,
+    "BEARISH":    60,   # Mercado bajista → no re-entrar en semanas
 }
 
 REGIME_PROFILES = {
@@ -119,40 +153,39 @@ REGIME_PROFILES = {
         "min_fundamental_score": 5,
         "min_conviction": None,
         "min_combined_score": None,
-        # Más capital desplegado en bull: dejar correr a los ganadores
-        "conviction_pct": {"VERY_HIGH": 0.65, "HIGH": 0.30, "MEDIUM": 0.12, "LOW": 0.05},
-        # Stop más amplio y target más ambicioso: capturar tendencias largas
-        "exit_high": {"stop_loss_pct": -12, "take_profit_pct": 60, "trailing_trigger_pct": 20, "trailing_stop_pct": 12},
-        "exit_low":  {"stop_loss_pct": -10, "take_profit_pct": 30, "trailing_trigger_pct": 12, "trailing_stop_pct": 9},
+        "conviction_pct": {"VERY_HIGH": 0.75, "HIGH": 0.38, "MEDIUM": 0.15, "LOW": 0.05},
+        # Stop loss amplio (-22%): correcciones normales de 15-20% en bull market
+        # no deben cerrar posiciones de swing/position trading.
+        # Take profit muy alto (200%) → prácticamente nunca activa; el trailing hace el trabajo.
+        "exit_high": {"stop_loss_pct": -22, "take_profit_pct": 200, "trailing_trigger_pct": 35, "trailing_stop_pct": 25},
+        "exit_low":  {"stop_loss_pct": -15, "take_profit_pct":  60, "trailing_trigger_pct": 22, "trailing_stop_pct": 18},
     },
     "NEUTRAL": {
         "description": "Sin tendencia clara (lateral)",
         "min_fundamental_score": 6,
-        "min_conviction": None,
+        "min_conviction": "HIGH",       # Era None: exigimos más en incertidumbre
         "min_combined_score": None,
-        "conviction_pct": {"VERY_HIGH": 0.40, "HIGH": 0.18, "MEDIUM": 0.08, "LOW": 0.03},
-        "exit_high": {"stop_loss_pct": -9, "take_profit_pct": 22, "trailing_trigger_pct": 10, "trailing_stop_pct": 7},
-        "exit_low":  {"stop_loss_pct": -7, "take_profit_pct": 14, "trailing_trigger_pct": 7, "trailing_stop_pct": 5},
+        "conviction_pct": {"VERY_HIGH": 0.40, "HIGH": 0.20, "MEDIUM": 0.0, "LOW": 0.0},
+        "exit_high": {"stop_loss_pct": -13, "take_profit_pct": 28, "trailing_trigger_pct": 14, "trailing_stop_pct": 10},
+        "exit_low":  {"stop_loss_pct": -10, "take_profit_pct": 18, "trailing_trigger_pct":  9, "trailing_stop_pct":  7},
     },
     "BEARISH": {
         "description": "Tendencia bajista (precio y SMA50 < SMA200 del benchmark)",
-        "min_fundamental_score": 8,
+        "min_fundamental_score": 9,
         "min_conviction": "VERY_HIGH",
-        "min_combined_score": 0.78,
-        # Muy poca exposición larga en bear: solo oportunidades excepcionales
-        "conviction_pct": {"VERY_HIGH": 0.15, "HIGH": 0.0, "MEDIUM": 0.0, "LOW": 0.0},
-        # Stops muy ajustados: preservar capital es la prioridad
+        "min_combined_score": 0.80,
+        "conviction_pct": {"VERY_HIGH": 0.10, "HIGH": 0.0, "MEDIUM": 0.0, "LOW": 0.0},
         "exit_high": {"stop_loss_pct": -6, "take_profit_pct": 14, "trailing_trigger_pct": 7, "trailing_stop_pct": 5},
-        "exit_low":  {"stop_loss_pct": -5, "take_profit_pct": 9,  "trailing_trigger_pct": 5, "trailing_stop_pct": 4},
+        "exit_low":  {"stop_loss_pct": -5, "take_profit_pct":  9, "trailing_trigger_pct": 5, "trailing_stop_pct": 4},
     },
     "BEAR_RALLY": {
         "description": "Rebote dentro de tendencia bajista mayor",
-        "min_fundamental_score": 8,
+        "min_fundamental_score": 9,
         "min_conviction": "VERY_HIGH",
-        "min_combined_score": 0.72,
-        "conviction_pct": {"VERY_HIGH": 0.12, "HIGH": 0.0, "MEDIUM": 0.0, "LOW": 0.0},
+        "min_combined_score": 0.78,
+        "conviction_pct": {"VERY_HIGH": 0.08, "HIGH": 0.0, "MEDIUM": 0.0, "LOW": 0.0},
         "exit_high": {"stop_loss_pct": -5, "take_profit_pct": 11, "trailing_trigger_pct": 6, "trailing_stop_pct": 4},
-        "exit_low":  {"stop_loss_pct": -4, "take_profit_pct": 7,  "trailing_trigger_pct": 4, "trailing_stop_pct": 3},
+        "exit_low":  {"stop_loss_pct": -4, "take_profit_pct":  7, "trailing_trigger_pct": 4, "trailing_stop_pct": 3},
     },
 }
 
@@ -311,6 +344,22 @@ class TechnicalIndicators:
             señal = "LATERAL"
             confianza = 35
 
+        # "Buy the dip" en uptrend estructural:
+        # Si el mercado está en tendencia larga (golden cross + por encima de SMA200)
+        # y el precio ha retrocedido (RSI < 44), es oportunidad de compra aunque
+        # las señales corto plazo no estén perfectas. Salvaguarda: solo aplica si el
+        # precio está a máximo 8% por debajo del SMA50 (no es crash, solo corrección).
+        bull_dip = (
+            golden_cross
+            and above_sma200
+            and sma200_val is not None and current_price > sma200_val * 0.93
+            and sma50_val > 0 and current_price > sma50_val * 0.92
+            and 22 < rsi_val < 44
+        )
+        if bull_dip and señal in ("LATERAL", "BAJISTA"):
+            señal = "ALCISTA"
+            confianza = max(confianza, 58)
+
         entry = current_price
         if señal == "ALCISTA":
             stop_loss = round(min(support, sma50_val) * 0.98, 2)
@@ -394,15 +443,17 @@ class BacktestSimulator:
         self.positions: Dict[str, List[Dict]] = {}
         self.daily_portfolio_values: List[Dict] = []
 
-        self.stop_loss_cooldown: Dict[str, object] = {}
-        self.cooldown_days = 14
+        self.stop_loss_cooldown: Dict[str, object] = {}  # ticker → fecha mín. re-entrada tras stop loss
+        self.last_buy_date: Dict[str, object] = {}       # ticker → última fecha de compra (anti-pirámide)
 
         self.peak_portfolio_value = initial_capital
         self.trading_paused = False
-        self.pause_drawdown_threshold = 15.0
-        self.resume_drawdown_threshold = 8.0
+        # 30 %: con la salida por cambio de régimen, el CB solo actúa en crashes extremos.
+        # Pausa máxima de 5 días: evita que el bot se quede fuera durante la recuperación.
+        self.pause_drawdown_threshold = 30.0
+        self.resume_drawdown_threshold = 18.0
         self.paused_days_count = 0
-        self.max_pause_days = 20
+        self.max_pause_days = 5
         self.days_paused_streak = 0
 
         self.historical_data: Dict[str, pd.DataFrame] = {}
@@ -440,18 +491,34 @@ class BacktestSimulator:
         logger.info("DESCARGANDO DATOS HISTÓRICOS")
         logger.info(f"{'='*70}")
 
+        # Normalizar fechas a datetime.date (por si se pasan datetime.datetime)
+        need_start = self.data_start_date.date() if hasattr(self.data_start_date, 'date') and callable(self.data_start_date.date) else self.data_start_date
+        need_end   = self.end_date.date()        if hasattr(self.end_date,         'date') and callable(self.end_date.date)         else self.end_date
+
         for ticker in self.tickers:
+            # — Intentar caché —
+            cache_ok = False
             try:
-                # Intentar cargar del caché primero
                 cached_df = _load_cached_data(ticker)
                 if cached_df is not None and len(cached_df) > 0:
-                    mask = (cached_df.index.date >= self.data_start_date.date()) & (cached_df.index.date <= self.end_date.date())
-                    if mask.any():
-                        self.historical_data[ticker] = cached_df[mask]
-                        logger.info(f"  ✓ {ticker}: {len(cached_df[mask])} días (desde caché)")
-                        continue
+                    mask = (cached_df.index.date >= need_start) & (cached_df.index.date <= need_end)
+                    masked = cached_df[mask]
+                    earliest_cached = cached_df.index.min().date()
+                    # Caché válido: cubre todo el período y tiene suficientes días para SMA200
+                    if len(masked) >= 250 and earliest_cached <= need_start + timedelta(days=30):
+                        self.historical_data[ticker] = masked
+                        logger.info(f"  ✓ {ticker}: {len(masked)} días (desde caché)")
+                        cache_ok = True
+                    else:
+                        logger.info(f"  ↻ {ticker}: caché insuficiente ({len(masked)} días / desde {earliest_cached}), descargando...")
+            except Exception as e:
+                logger.warning(f"  ⚠️ {ticker}: error leyendo caché: {e}")
 
-                # Descargar de Yahoo Finance
+            if cache_ok:
+                continue
+
+            # — Descargar de Yahoo Finance —
+            try:
                 df = yf.download(
                     ticker,
                     start=self.data_start_date,
@@ -587,11 +654,23 @@ class BacktestSimulator:
 
     def run_fundamental_analysis(self) -> None:
         logger.info(f"\n{'='*70}")
-        logger.info("ANÁLISIS FUNDAMENTAL (1 vez por ticker)")
+        logger.info("ANÁLISIS FUNDAMENTAL (1 vez por ticker, con caché persistente)")
         logger.info(f"{'='*70}\n")
+
+        persistent_cache = _load_fundamental_cache()
 
         for ticker in self.tickers:
             if ticker not in self.historical_data:
+                continue
+
+            # Usar caché persistente si existe (evita re-llamar al LLM entre runs)
+            if ticker in persistent_cache:
+                self.fundamental_cache[ticker] = persistent_cache[ticker]
+                cached = persistent_cache[ticker]
+                logger.info(
+                    f"  ✓ {ticker} (caché): Score={cached.get('score')}/10 | "
+                    f"Confidence={cached.get('confidence')}%"
+                )
                 continue
 
             analysis = None
@@ -636,6 +715,9 @@ class BacktestSimulator:
                 analysis["confidence"] = 30
 
             self.fundamental_cache[ticker] = analysis
+            # Persistir en caché para futuras ejecuciones del mismo test
+            persistent_cache[ticker] = analysis
+            _save_fundamental_cache(persistent_cache)
             logger.info(
                 f"    Score: {analysis.get('score', '?')}/10 | "
                 f"Confidence: {analysis.get('confidence', '?')}%"
@@ -737,6 +819,13 @@ class BacktestSimulator:
             self.paused_days_count += 1
 
         # ── Compras ──
+        # Calcular valor total del portfolio para checks de concentración
+        _portfolio_value = self.current_capital + sum(
+            lot["qty"] * (self.get_price_at_date(tk, analysis_date) or 0)
+            for tk, lots in self.positions.items()
+            for lot in lots
+        )
+
         for candidate in daily_analysis.get("candidates", []):
             if self.trading_paused:
                 break
@@ -745,6 +834,7 @@ class BacktestSimulator:
             conviction = candidate.get("conviction")
             score = candidate.get("combined_score", 0)
 
+            # ── Cooldown tras stop loss ──
             cooldown_until = self.stop_loss_cooldown.get(ticker)
             if cooldown_until and analysis_date < cooldown_until:
                 continue
@@ -753,6 +843,37 @@ class BacktestSimulator:
             if not price:
                 continue
 
+            technical = candidate.get("technical", {})
+            rsi = technical.get("rsi", 55.0)
+            is_new_position = ticker not in self.positions
+
+            # ── Filtro RSI: evitar entrar en sobrecompra ──
+            # Nueva posición en BULLISH: hasta RSI 72 (rango "sano alcista").
+            # Nueva posición en otros regímenes: máx RSI 62 (más estricto).
+            # Adición a posición existente: solo en dip (RSI ≤ 52 BULLISH, ≤ 47 resto).
+            rsi_limit_new = 72 if regime == "BULLISH" else 62
+            rsi_limit_add = 52 if regime == "BULLISH" else 47
+            if is_new_position and rsi > rsi_limit_new:
+                continue
+            if not is_new_position and rsi > rsi_limit_add:
+                continue
+
+            # ── Anti-pirámide: límite de frecuencia por ticker ──
+            # Máximo 1 compra del mismo ticker cada 15 días naturales.
+            # Excepción: RSI < BUY_FREQUENCY_DEEP_DIP_RSI (dip profundo = dip-buy válido).
+            last_buy = self.last_buy_date.get(ticker)
+            if last_buy is not None:
+                days_gap = (analysis_date - last_buy).days
+                min_gap = 8 if rsi < BUY_FREQUENCY_DEEP_DIP_RSI else BUY_FREQUENCY_LIMIT_DAYS
+                if days_gap < min_gap:
+                    continue
+
+            # ── Concentración máxima por ticker: 50 % del portfolio ──
+            if ticker in self.positions and _portfolio_value > 0:
+                position_value = sum(lot["qty"] * price for lot in self.positions[ticker])
+                if position_value / _portfolio_value > 0.50:
+                    continue
+
             conviction_pct = profile["conviction_pct"].get(conviction, 0.0)
             if conviction_pct <= 0:
                 continue
@@ -760,47 +881,47 @@ class BacktestSimulator:
             amount_to_invest = self.current_capital * conviction_pct
             quantity = int(amount_to_invest / price)
 
-            if quantity > 0:
+            # ── Tamaño mínimo: evitar micro-lotes (≥ 2 acciones) ──
+            if quantity < 2:
+                continue
+
+            cost = quantity * price
+            fee = cost * self.transaction_cost_pct
+            total_outflow = cost + fee
+
+            # Ajuste si no hay liquidez suficiente para incluir la fee
+            while total_outflow > self.current_capital and quantity > 0:
+                quantity -= 1
                 cost = quantity * price
-                # ── COSTE DE TRANSACCIÓN (compra) ──
-                # Se cobra sobre el importe operado. El cash total que se
-                # resta del capital es cost + fee. Si no hay suficiente
-                # liquidez para ambos, se reduce la cantidad.
                 fee = cost * self.transaction_cost_pct
                 total_outflow = cost + fee
 
-                # Ajuste si no hay liquidez suficiente para incluir la fee
-                while total_outflow > self.current_capital and quantity > 0:
-                    quantity -= 1
-                    cost = quantity * price
-                    fee = cost * self.transaction_cost_pct
-                    total_outflow = cost + fee
+            if quantity >= 2 and total_outflow <= self.current_capital:
+                self.current_capital -= total_outflow
+                self.total_transaction_costs += fee
+                self.last_buy_date[ticker] = analysis_date  # registrar para anti-pirámide
 
-                if quantity > 0 and total_outflow <= self.current_capital:
-                    self.current_capital -= total_outflow
-                    self.total_transaction_costs += fee
-
-                    self.positions.setdefault(ticker, []).append({
-                        "qty": quantity,
-                        "entry_price": price,
-                        "entry_date": analysis_date,
-                        "conviction": conviction,
-                        "score": score,
-                        "peak_price": price,
-                        "entry_regime": regime,
-                        "entry_fee": fee,
-                    })
-                    self.trades.append({
-                        "date": analysis_date,
-                        "ticker": ticker,
-                        "action": "BUY",
-                        "price": price,
-                        "quantity": quantity,
-                        "amount": cost,
-                        "fee": fee,
-                        "conviction": conviction,
-                        "regime": regime,
-                    })
+                self.positions.setdefault(ticker, []).append({
+                    "qty": quantity,
+                    "entry_price": price,
+                    "entry_date": analysis_date,
+                    "conviction": conviction,
+                    "score": score,
+                    "peak_price": price,
+                    "entry_regime": regime,
+                    "entry_fee": fee,
+                })
+                self.trades.append({
+                    "date": analysis_date,
+                    "ticker": ticker,
+                    "action": "BUY",
+                    "price": price,
+                    "quantity": quantity,
+                    "amount": cost,
+                    "fee": fee,
+                    "conviction": conviction,
+                    "regime": regime,
+                })
 
         # ── Hedge ──
         # En BEARISH/BEAR_RALLY desplegamos PSQ (ETF inverso Nasdaq) sin exigir
@@ -881,33 +1002,76 @@ class BacktestSimulator:
                     force_close_hedge = regime not in HEDGE_REGIMES
                 else:
                     conv = lot.get("conviction", "MEDIUM")
-                    params = profile["exit_high"] if conv in ("VERY_HIGH", "HIGH") else profile["exit_low"]
+                    # Stop loss: usa los parámetros del RÉGIMEN DE ENTRADA.
+                    # Evita que transiciones a BEAR_RALLY/BEARISH apliquen stops
+                    # más cortos (-5 %) a posiciones abiertas en BULLISH (-22 %).
+                    # La salida macro la gestiona "Cambio de Régimen".
+                    entry_regime_name = lot.get("entry_regime", regime)
+                    entry_profile = REGIME_PROFILES.get(entry_regime_name, profile)
+                    entry_params = (
+                        entry_profile["exit_high"] if conv in ("VERY_HIGH", "HIGH")
+                        else entry_profile["exit_low"]
+                    )
+                    # Take profit y trailing: régimen ACTUAL (gestión dinámica del momentum)
+                    current_params = (
+                        profile["exit_high"] if conv in ("VERY_HIGH", "HIGH")
+                        else profile["exit_low"]
+                    )
                     force_close_hedge = False
 
                 sell_reason = None
                 if force_close_hedge:
                     sell_reason = "Cierre Hedge"
-                elif pnl_pct <= params["stop_loss_pct"]:
-                    sell_reason = "Stop Loss"
-                elif pnl_pct >= params["take_profit_pct"]:
-                    sell_reason = "Take Profit"
+
+                # ── Salida por cambio de régimen ──
+                # Solo en BEARISH (no en BEAR_RALLY): los rebotes técnicos en tendencia
+                # bajista son temporales. En posiciones ganadoras el stop loss desde
+                # entrada del régimen BEAR_RALLY no dispara, por lo que se mantienen.
+                # Evitamos así salidas precipitadas en años de recuperación (2023, 2025).
                 elif (
-                    pnl_pct >= params["trailing_trigger_pct"]
-                    and drawdown_from_peak_pct <= -params["trailing_stop_pct"]
+                    not is_hedge
+                    and lot.get("entry_regime") in ("BULLISH", "NEUTRAL")
+                    and regime == "BEARISH"
                 ):
-                    sell_reason = "Trailing Stop"
+                    sell_reason = "Cambio de Régimen"
+
+                elif is_hedge:
+                    # Para hedge (PSQ) usamos sus propios params fijos
+                    if pnl_pct <= HEDGE_EXIT_PARAMS["stop_loss_pct"]:
+                        sell_reason = "Stop Loss"
+                    elif pnl_pct >= HEDGE_EXIT_PARAMS["take_profit_pct"]:
+                        sell_reason = "Take Profit"
+                    elif (
+                        pnl_pct >= HEDGE_EXIT_PARAMS["trailing_trigger_pct"]
+                        and drawdown_from_peak_pct <= -HEDGE_EXIT_PARAMS["trailing_stop_pct"]
+                    ):
+                        sell_reason = "Trailing Stop"
+                else:
+                    # Stop loss con confirmación de 3 días consecutivos.
+                    # Filtra caídas en V (COVID-2020: sólo 2 días bajo el umbral
+                    # antes del rebote masivo) sin afectar mercados bajistas
+                    # sostenidos donde el precio permanece bajo más de 3 jornadas.
+                    if pnl_pct <= entry_params["stop_loss_pct"]:
+                        lot["days_below_stop"] = lot.get("days_below_stop", 0) + 1
+                        if lot["days_below_stop"] >= 3:
+                            sell_reason = "Stop Loss"
+                    else:
+                        lot["days_below_stop"] = 0
+                    # Take profit y trailing: régimen actual (ajuste dinámico)
+                    if sell_reason is None and pnl_pct >= current_params["take_profit_pct"]:
+                        sell_reason = "Take Profit"
+                    elif sell_reason is None and (
+                        pnl_pct >= current_params["trailing_trigger_pct"]
+                        and drawdown_from_peak_pct <= -current_params["trailing_stop_pct"]
+                    ):
+                        sell_reason = "Trailing Stop"
 
                 if sell_reason:
-                    # ── COSTE DE TRANSACCIÓN (venta) ──
-                    # Se cobra sobre el importe de venta. El cash que vuelve
-                    # al capital es lot_value - fee, así que el P&L real
-                    # incluye comisiones de compra Y venta.
                     fee = lot_value * self.transaction_cost_pct
                     net_inflow = lot_value - fee
                     self.current_capital += net_inflow
                     self.total_transaction_costs += fee
 
-                    # P&L neto: incluye fee de compra (ya pagada) + fee de venta
                     entry_fee = lot.get("entry_fee", 0)
                     pnl_net = pnl - entry_fee - fee
 
@@ -919,8 +1083,8 @@ class BacktestSimulator:
                         "quantity": lot["qty"],
                         "amount": lot_value,
                         "fee": fee,
-                        "pnl": pnl_net,         # P&L NETO (descontadas comisiones)
-                        "pnl_gross": pnl,        # P&L bruto (sin comisiones), informativo
+                        "pnl": pnl_net,
+                        "pnl_gross": pnl,
                         "pnl_pct": pnl_pct,
                         "reason": sell_reason,
                         "regime": regime,
@@ -928,8 +1092,14 @@ class BacktestSimulator:
                         "is_hedge": is_hedge,
                     })
 
-                    if sell_reason == "Stop Loss" and not is_hedge:
-                        self.stop_loss_cooldown[ticker] = analysis_date + timedelta(days=self.cooldown_days)
+                    if not is_hedge:
+                        if sell_reason == "Stop Loss":
+                            # Cooldown dependiente del régimen en el que disparó el stop
+                            days = STOP_LOSS_COOLDOWN.get(regime, 25)
+                            self.stop_loss_cooldown[ticker] = analysis_date + timedelta(days=days)
+                        elif sell_reason == "Cambio de Régimen":
+                            # 45 días mínimos; en bear sostenido el régimen ya bloquea re-entrada
+                            self.stop_loss_cooldown[ticker] = analysis_date + timedelta(days=45)
                 else:
                     remaining_lots.append(lot)
 

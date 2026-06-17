@@ -587,32 +587,50 @@ with tab4:
             btn_execute = st.button("▶️ EJECUTAR SIMULACIÓN", width="stretch", key="btn_run_backtest")
 
         with col_btn_clear:
-            btn_clear = st.button("🗑️ Limpiar Caché", width="stretch", key="btn_clear_cache", help="Elimina todos los datos históricos guardados")
+            btn_clear = st.button("🗑️ Limpiar Caché", width="stretch", key="btn_clear_cache",
+                                  help="Elimina precios históricos y análisis fundamentales guardados")
 
         # Mostrar info del caché
         cached_tickers = BacktestRunner.get_cached_tickers()
         cache_size = BacktestRunner.get_cache_size()
+        fundamental_cache_path = Path(__file__).parent.parent / "data" / "fundamental_cache.json"
+        has_fundamental_cache = fundamental_cache_path.exists()
 
-        if cached_tickers or cache_size != "0 B":
-            st.caption(f"📊 Caché: {len(cached_tickers)} tickers • {cache_size}")
+        cache_parts = []
+        if cached_tickers:
+            cache_parts.append(f"{len(cached_tickers)} tickers ({cache_size})")
+        if has_fundamental_cache:
+            cache_parts.append("análisis fundamental")
 
-        # Manejo del botón de limpiar
+        if cache_parts:
+            st.caption(f"📦 Caché: {' + '.join(cache_parts)}")
+
+        # Manejo del botón de limpiar — usa session_state para evitar el bug
+        # de Streamlit donde los botones anidados no se ejecutan nunca
+        # (al hacer rerun, btn_clear vuelve a False y el hijo no se renderiza)
+        if "confirm_clear_cache" not in st.session_state:
+            st.session_state.confirm_clear_cache = False
+
         if btn_clear:
-            st.warning("⚠️ ¿Estás seguro de que quieres eliminar TODO el histórico de datos?")
+            st.session_state.confirm_clear_cache = True
 
+        if st.session_state.confirm_clear_cache:
+            st.warning("⚠️ ¿Eliminar TODO el caché? (precios + análisis LLM)")
             col_confirm_yes, col_confirm_no = st.columns(2)
 
             with col_confirm_yes:
-                if st.button("✅ Sí, eliminar todo", width="stretch", key="btn_confirm_clear"):
+                if st.button("✅ Sí, eliminar", width="stretch", key="btn_confirm_clear"):
+                    st.session_state.confirm_clear_cache = False
                     success, message = BacktestRunner.clear_all_cache()
                     if success:
                         st.success(message)
-                        st.rerun()
                     else:
                         st.error(message)
+                    st.rerun()
 
             with col_confirm_no:
                 if st.button("❌ Cancelar", width="stretch", key="btn_cancel_clear"):
+                    st.session_state.confirm_clear_cache = False
                     st.rerun()
 
         if btn_execute:
