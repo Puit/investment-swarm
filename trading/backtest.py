@@ -105,11 +105,11 @@ CONVICTION_ORDER = {"LOW": 0, "MEDIUM": 1, "HIGH": 2, "VERY_HIGH": 3}
 
 HEDGE_TICKER = "PSQ"
 HEDGE_REGIMES = ("BEARISH", "BEAR_RALLY")
-HEDGE_ALLOCATION_PCT = 0.25
+HEDGE_ALLOCATION_PCT = 0.35  # Más agresivo en mercados bajistas
 HEDGE_EXIT_PARAMS = {
-    "stop_loss_pct": -10,
-    "take_profit_pct": 20,
-    "trailing_trigger_pct": 10,
+    "stop_loss_pct": -8,
+    "take_profit_pct": 25,
+    "trailing_trigger_pct": 12,
     "trailing_stop_pct": 8,
 }
 
@@ -119,36 +119,40 @@ REGIME_PROFILES = {
         "min_fundamental_score": 5,
         "min_conviction": None,
         "min_combined_score": None,
-        "conviction_pct": {"VERY_HIGH": 0.60, "HIGH": 0.25, "MEDIUM": 0.10, "LOW": 0.05},
-        "exit_high": {"stop_loss_pct": -12, "take_profit_pct": 50, "trailing_trigger_pct": 15, "trailing_stop_pct": 10},
-        "exit_low":  {"stop_loss_pct": -10, "take_profit_pct": 25, "trailing_trigger_pct": 10, "trailing_stop_pct": 8},
+        # Más capital desplegado en bull: dejar correr a los ganadores
+        "conviction_pct": {"VERY_HIGH": 0.65, "HIGH": 0.30, "MEDIUM": 0.12, "LOW": 0.05},
+        # Stop más amplio y target más ambicioso: capturar tendencias largas
+        "exit_high": {"stop_loss_pct": -12, "take_profit_pct": 60, "trailing_trigger_pct": 20, "trailing_stop_pct": 12},
+        "exit_low":  {"stop_loss_pct": -10, "take_profit_pct": 30, "trailing_trigger_pct": 12, "trailing_stop_pct": 9},
     },
     "NEUTRAL": {
         "description": "Sin tendencia clara (lateral)",
         "min_fundamental_score": 6,
         "min_conviction": None,
         "min_combined_score": None,
-        "conviction_pct": {"VERY_HIGH": 0.40, "HIGH": 0.15, "MEDIUM": 0.07, "LOW": 0.03},
-        "exit_high": {"stop_loss_pct": -8, "take_profit_pct": 18, "trailing_trigger_pct": 8, "trailing_stop_pct": 6},
-        "exit_low":  {"stop_loss_pct": -7, "take_profit_pct": 12, "trailing_trigger_pct": 6, "trailing_stop_pct": 5},
+        "conviction_pct": {"VERY_HIGH": 0.40, "HIGH": 0.18, "MEDIUM": 0.08, "LOW": 0.03},
+        "exit_high": {"stop_loss_pct": -9, "take_profit_pct": 22, "trailing_trigger_pct": 10, "trailing_stop_pct": 7},
+        "exit_low":  {"stop_loss_pct": -7, "take_profit_pct": 14, "trailing_trigger_pct": 7, "trailing_stop_pct": 5},
     },
     "BEARISH": {
         "description": "Tendencia bajista (precio y SMA50 < SMA200 del benchmark)",
         "min_fundamental_score": 8,
         "min_conviction": "VERY_HIGH",
-        "min_combined_score": 0.75,
-        "conviction_pct": {"VERY_HIGH": 0.20, "HIGH": 0.0, "MEDIUM": 0.0, "LOW": 0.0},
-        "exit_high": {"stop_loss_pct": -7, "take_profit_pct": 15, "trailing_trigger_pct": 6, "trailing_stop_pct": 5},
-        "exit_low":  {"stop_loss_pct": -6, "take_profit_pct": 10, "trailing_trigger_pct": 5, "trailing_stop_pct": 4},
+        "min_combined_score": 0.78,
+        # Muy poca exposición larga en bear: solo oportunidades excepcionales
+        "conviction_pct": {"VERY_HIGH": 0.15, "HIGH": 0.0, "MEDIUM": 0.0, "LOW": 0.0},
+        # Stops muy ajustados: preservar capital es la prioridad
+        "exit_high": {"stop_loss_pct": -6, "take_profit_pct": 14, "trailing_trigger_pct": 7, "trailing_stop_pct": 5},
+        "exit_low":  {"stop_loss_pct": -5, "take_profit_pct": 9,  "trailing_trigger_pct": 5, "trailing_stop_pct": 4},
     },
     "BEAR_RALLY": {
         "description": "Rebote dentro de tendencia bajista mayor",
         "min_fundamental_score": 8,
         "min_conviction": "VERY_HIGH",
-        "min_combined_score": 0.70,
-        "conviction_pct": {"VERY_HIGH": 0.15, "HIGH": 0.0, "MEDIUM": 0.0, "LOW": 0.0},
-        "exit_high": {"stop_loss_pct": -6, "take_profit_pct": 12, "trailing_trigger_pct": 5, "trailing_stop_pct": 4},
-        "exit_low":  {"stop_loss_pct": -5, "take_profit_pct": 8, "trailing_trigger_pct": 4, "trailing_stop_pct": 3},
+        "min_combined_score": 0.72,
+        "conviction_pct": {"VERY_HIGH": 0.12, "HIGH": 0.0, "MEDIUM": 0.0, "LOW": 0.0},
+        "exit_high": {"stop_loss_pct": -5, "take_profit_pct": 11, "trailing_trigger_pct": 6, "trailing_stop_pct": 4},
+        "exit_low":  {"stop_loss_pct": -4, "take_profit_pct": 7,  "trailing_trigger_pct": 4, "trailing_stop_pct": 3},
     },
 }
 
@@ -175,6 +179,10 @@ class TechnicalIndicators:
             else None
         )
 
+        # Momentum 20 días (rate of change)
+        mom_period = min(20, len(close) - 1)
+        momentum_20 = ((current_price - float(close.iloc[-mom_period - 1])) / float(close.iloc[-mom_period - 1]) * 100) if mom_period > 0 else 0.0
+
         delta = close.diff()
         gain = delta.where(delta > 0, 0.0).rolling(14).mean()
         loss = (-delta.where(delta < 0, 0.0)).rolling(14).mean()
@@ -186,12 +194,15 @@ class TechnicalIndicators:
         ema26 = close.ewm(span=26, adjust=False).mean()
         macd_line = ema12 - ema26
         signal_line = macd_line.ewm(span=9, adjust=False).mean()
-        macd_above = bool(macd_line.iloc[-1] > signal_line.iloc[-1])
+        macd_val = float(macd_line.iloc[-1])
+        signal_val = float(signal_line.iloc[-1])
+        macd_above = macd_val > signal_val
+        macd_strong = macd_above and macd_val > 0  # Por encima de cero = momentum real
 
         bb_mid = close.rolling(20).mean()
         bb_std = close.rolling(20).std()
-        bb_lower = (bb_mid - 2 * bb_std).iloc[-1]
-        bb_upper = (bb_mid + 2 * bb_std).iloc[-1]
+        bb_lower = float((bb_mid - 2 * bb_std).iloc[-1])
+        bb_upper = float((bb_mid + 2 * bb_std).iloc[-1])
 
         vol_avg20 = volume.rolling(20).mean()
         vol_ratio = (
@@ -199,62 +210,111 @@ class TechnicalIndicators:
             if vol_avg20.iloc[-1] and vol_avg20.iloc[-1] > 0
             else 1.0
         )
-        volume_confirms = vol_ratio > 1.2
+        volume_confirms = vol_ratio > 1.15
 
         support = float(close.tail(20).min())
         resistance = float(close.tail(20).max())
 
-        trend_bullish = current_price > sma20_val > sma50_val
-        trend_bearish = current_price < sma20_val < sma50_val
-        if sma200_val:
-            trend_bullish = trend_bullish and sma50_val > sma200_val
-            trend_bearish = trend_bearish and sma50_val < sma200_val
+        # SMA alineadas (tendencia corto plazo)
+        sma_aligned_bull = current_price > sma20_val > sma50_val
+        sma_aligned_bear = current_price < sma20_val < sma50_val
 
-        rsi_oversold = rsi_val < 35
-        rsi_overbought = rsi_val > 65
+        # SMA200: estructura macro
+        above_sma200 = sma200_val is not None and current_price > sma200_val
+        below_sma200 = sma200_val is not None and current_price < sma200_val
+        golden_cross = sma200_val is not None and sma50_val > sma200_val  # Bull estructural
+        death_cross  = sma200_val is not None and sma50_val < sma200_val  # Bear estructural
 
-        confirmations = {"trend": False, "rsi": False, "macd": False, "volumen": volume_confirms}
+        # RSI categorías mejoradas
+        rsi_oversold      = rsi_val < 38            # Sobreventa: posible rebote
+        rsi_healthy_bull  = 45 <= rsi_val <= 72     # NUEVO: momentum alcista sano
+        rsi_overbought    = rsi_val > 76            # Sobrecompra: precaución
+
+        confirmations = {
+            "trend": False, "rsi": False, "macd": False,
+            "volumen": volume_confirms, "sma200": False, "momentum": False,
+        }
         bullish_points = 0
         bearish_points = 0
 
-        if trend_bullish:
+        # 1. Alineación SMA corto plazo (1 punto)
+        if sma_aligned_bull:
             bullish_points += 1
             confirmations["trend"] = True
-        elif trend_bearish:
+        elif sma_aligned_bear:
             bearish_points += 1
 
-        if rsi_oversold:
+        # 2. SMA200 / Golden-Death Cross (0-2 puntos) — señal estructural más importante
+        if sma200_val is not None:
+            if above_sma200 and golden_cross:
+                bullish_points += 2          # Máxima convicción alcista
+                confirmations["sma200"] = True
+            elif above_sma200:
+                bullish_points += 1
+                confirmations["sma200"] = True
+            elif below_sma200 and death_cross:
+                bearish_points += 2          # Máxima convicción bajista
+            elif below_sma200:
+                bearish_points += 1
+
+        # 3. RSI (1 punto) — ahora reconoce momentum sano, no solo sobreventa
+        if rsi_oversold or rsi_healthy_bull:
             bullish_points += 1
             confirmations["rsi"] = True
         elif rsi_overbought:
             bearish_points += 1
 
-        if macd_above:
+        # 4. MACD (1-2 puntos)
+        if macd_strong:          # Línea encima de señal Y encima de cero
+            bullish_points += 2
+            confirmations["macd"] = True
+        elif macd_above:         # Solo encima de señal (recuperando)
             bullish_points += 1
             confirmations["macd"] = True
         else:
             bearish_points += 1
 
+        # 5. Momentum 20d (1 punto)
+        if momentum_20 > 5:
+            bullish_points += 1
+            confirmations["momentum"] = True
+        elif momentum_20 < -5:
+            bearish_points += 1
+
+        # 6. Volumen confirma (1 punto bonus)
         if volume_confirms:
             if bullish_points > bearish_points:
                 bullish_points += 1
             elif bearish_points > bullish_points:
                 bearish_points += 1
 
-        if bullish_points >= 3:
+        # Señal final (máx ~8 bull / ~7 bear)
+        # ALCISTA fuerte: ≥5 puntos; ALCISTA: ≥3; BAJISTA fuerte: ≥5; BAJISTA: ≥3
+        if bullish_points >= 5:
             señal = "ALCISTA"
-            confianza = min(95, 50 + bullish_points * 12)
+            confianza = min(95, 45 + bullish_points * 7)
+        elif bearish_points >= 5:
+            señal = "BAJISTA"
+            confianza = min(95, 45 + bearish_points * 7)
+        elif bullish_points >= 3:
+            señal = "ALCISTA"
+            confianza = min(72, 38 + bullish_points * 8)
         elif bearish_points >= 3:
             señal = "BAJISTA"
-            confianza = min(95, 50 + bearish_points * 12)
+            confianza = min(72, 38 + bearish_points * 8)
         else:
             señal = "LATERAL"
-            confianza = 40
+            confianza = 35
+
+        # Restricción estructural: no ALCISTA si precio está bajo SMA200
+        if señal == "ALCISTA" and below_sma200:
+            señal = "LATERAL"
+            confianza = 35
 
         entry = current_price
         if señal == "ALCISTA":
             stop_loss = round(min(support, sma50_val) * 0.98, 2)
-            target = round(resistance * 1.05, 2)
+            target = round(resistance * 1.06, 2)
         elif señal == "BAJISTA":
             stop_loss = round(max(resistance, sma50_val) * 1.02, 2)
             target = round(support * 0.95, 2)
@@ -271,15 +331,28 @@ class TechnicalIndicators:
             "confianza": confianza,
             "rsi": round(rsi_val, 2),
             "rsi_interpretacion": (
-                "oversold" if rsi_oversold else "overbought" if rsi_overbought else "neutral"
+                "oversold" if rsi_oversold
+                else "healthy_bull" if rsi_healthy_bull
+                else "overbought" if rsi_overbought
+                else "neutral"
             ),
-            "tendencia": "ALCISTA" if trend_bullish else "BAJISTA" if trend_bearish else "LATERAL",
+            "tendencia": "ALCISTA" if sma_aligned_bull else "BAJISTA" if sma_aligned_bear else "LATERAL",
+            "golden_cross": golden_cross,
+            "death_cross": death_cross,
+            "above_sma200": above_sma200,
+            "momentum_20d": round(momentum_20, 2),
             "entrada_sugerida": round(entry, 2),
             "stop_loss": stop_loss,
             "target_price": target,
             "reward_risk_ratio": rr_ratio,
             "confirmaciones": confirmations,
-            "resumen": f"SMA20={sma20_val:.2f} SMA50={sma50_val:.2f} RSI={rsi_val:.1f}",
+            "bullish_points": bullish_points,
+            "bearish_points": bearish_points,
+            "resumen": (
+                f"SMA20={sma20_val:.2f} SMA50={sma50_val:.2f} "
+                f"RSI={rsi_val:.1f} Mom20={momentum_20:+.1f}% "
+                f"GC={golden_cross} DC={death_cross}"
+            ),
         }
 
 
@@ -335,7 +408,7 @@ class BacktestSimulator:
         self.historical_data: Dict[str, pd.DataFrame] = {}
         self.fundamental_cache: Dict[str, Dict] = {}
 
-        self.regime_benchmark = "XLK"
+        self.regime_benchmark = "SPY"  # S&P500 como benchmark de régimen (más representativo que XLK)
         self.benchmark_data: Optional[pd.DataFrame] = None
         self.regimes: Dict = {}
 
@@ -730,11 +803,16 @@ class BacktestSimulator:
                     })
 
         # ── Hedge ──
+        # En BEARISH/BEAR_RALLY desplegamos PSQ (ETF inverso Nasdaq) sin exigir
+        # señal ALCISTA propia: en mercados bajistas PSQ sube por definición, y
+        # esperar confirmación técnica puede hacer perder el mejor punto de entrada.
+        # Solo evitamos entrar si PSQ muestra señal BAJISTA activa (indicaría rebote
+        # del mercado que podría perjudicarnos).
         if regime in HEDGE_REGIMES and HEDGE_TICKER not in self.positions:
             hedge_df = self._df_until(HEDGE_TICKER, analysis_date)
             if hedge_df is not None and len(hedge_df) >= 50:
                 hedge_technical = TechnicalIndicators.calculate(hedge_df)
-                if hedge_technical.get("señal") == "ALCISTA":
+                if hedge_technical.get("señal") != "BAJISTA":
                     hedge_price = self.get_price_at_date(HEDGE_TICKER, analysis_date)
                     if hedge_price:
                         amount = self.current_capital * HEDGE_ALLOCATION_PCT

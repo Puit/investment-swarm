@@ -174,11 +174,14 @@ class InvestmentDecisionEngine:
             avg_confidence = (fundamental_confidence + technical_confidence + sentiment_confidence) / 3
             
             # ── CONVICTION LEVEL ──
-            if combined_score >= 0.75 and avg_confidence >= 0.75:
+            # En backtest el sentimiento siempre es NEUTRO (0.5 / 50% confianza),
+            # lo que arrastra avg_confidence hacia abajo artificialmente.
+            # Umbrales ajustados para ser justos con datos reales fundamental+técnico.
+            if combined_score >= 0.74 and avg_confidence >= 0.62:
                 conviction = "VERY_HIGH"
-            elif combined_score >= 0.65 and avg_confidence >= 0.60:
+            elif combined_score >= 0.63 and avg_confidence >= 0.52:
                 conviction = "HIGH"
-            elif combined_score >= 0.55 and avg_confidence >= 0.50:
+            elif combined_score >= 0.53 and avg_confidence >= 0.44:
                 conviction = "MEDIUM"
             else:
                 conviction = "LOW"
