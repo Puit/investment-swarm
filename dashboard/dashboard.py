@@ -26,10 +26,10 @@ from crewai import Task, Crew, Process
 import re
 
 try:
-    from brokers.interactive_brokers_broker import InteractiveBrokersBroker
-    IB_AVAILABLE = True
+    from brokers.freedom24_broker import Freedom24Broker
+    LIVE_BROKER_AVAILABLE = True
 except:
-    IB_AVAILABLE = False
+    LIVE_BROKER_AVAILABLE = False
 
 st.set_page_config(page_title="Investment Swarm", page_icon="📈", layout="wide")
 
@@ -40,13 +40,9 @@ st.set_page_config(page_title="Investment Swarm", page_icon="📈", layout="wide
 if "paper_engine" not in st.session_state:
     st.session_state.paper_engine = PaperTradingEngine(initial_capital=5000.0)
 
-if "live_broker" not in st.session_state and IB_AVAILABLE:
-    st.session_state.live_broker = InteractiveBrokersBroker()
-    try:
-        st.session_state.live_broker.connect()
-        st.session_state.live_connected = True
-    except:
-        st.session_state.live_connected = False
+if "live_broker" not in st.session_state and LIVE_BROKER_AVAILABLE:
+    st.session_state.live_broker = Freedom24Broker()
+    st.session_state.live_connected = st.session_state.live_broker.connect()
 else:
     st.session_state.live_broker = None
     st.session_state.live_connected = False
@@ -226,11 +222,28 @@ with tab1:
 with tab2:
     st.header("🔴 Live Trading")
     if live_connected:
-        st.success("✓ Conectado a Interactive Brokers")
+        st.success("✓ Conectado a Freedom24")
         portfolio = live_broker.get_portfolio_summary()
         st.metric("Total", fmt_money(portfolio["total_value"]))
+
+        # Mostrar posiciones
+        positions = portfolio.get("positions", [])
+        if positions:
+            st.subheader("Posiciones")
+            df = pd.DataFrame([
+                {
+                    "Ticker": p["ticker"],
+                    "Qty": p["qty"],
+                    "Entrada": f"${p['entry_price']:.2f}",
+                    "Actual": f"${p['current_price']:.2f}",
+                    "PnL": f"${p['pnl']:.2f}",
+                    "PnL%": f"{p['pnl_pct']:.2f}%"
+                }
+                for p in positions
+            ])
+            st.dataframe(df, use_container_width=True, hide_index=True)
     else:
-        st.warning("⚠️ No disponible - Conecta IB Gateway en puerto 4002")
+        st.warning("⚠️ No disponible - Configura Freedom24 en .env (FREEDOM24_API_KEY, etc.)")
 
 # ─────────────────────────────────────────────────────────────
 # TAB 3: ANÁLISIS INTEGRADO

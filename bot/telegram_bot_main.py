@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 # Imports locales
 from trading.paper_trading_engine import PaperTradingEngine
 from bot.telegram_bot import TelegramTradingBotV2
-from brokers.interactive_brokers_broker import InteractiveBrokersBroker
+from brokers.freedom24_broker import Freedom24Broker
 
 # Credenciales
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -58,11 +58,11 @@ async def main():
     engine = PaperTradingEngine(initial_capital=5000.0)
     logger.info("✓ Engine listo")
     
-    # 3. Inicializar Interactive Brokers (opcional)
-    logger.info("Intentando conectar con Interactive Brokers...")
-    broker = InteractiveBrokersBroker()
+    # 3. Inicializar Freedom24 Broker (opcional)
+    logger.info("Intentando conectar con Freedom24...")
+    broker = Freedom24Broker()
     broker_connected = False
-    
+
     try:
         if broker.connect():
             broker_connected = True

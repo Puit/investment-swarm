@@ -34,6 +34,7 @@ Suficiente para un solo usuario / paper trading.
 import json
 import logging
 import re
+import os
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -41,10 +42,13 @@ from typing import Dict, List, Optional
 import numpy as np
 import pandas as pd
 import yfinance as yf
+from dotenv import load_dotenv
 
 from crewai import Crew, Task, Process
 from agents.fundamental_agent import create_fundamental_agent
 from core.investment_decision_engine import InvestmentDecisionEngine
+
+load_dotenv()
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("PaperTrading")
@@ -110,8 +114,8 @@ DEFAULT_FUNDAMENTAL = {
 
 CONVICTION_ORDER = {"LOW": 0, "MEDIUM": 1, "HIGH": 2, "VERY_HIGH": 3}
 
-# Coste de transacción realista para Interactive Brokers
-TRANSACTION_COST_PCT = 0.0005  # 0.05%
+# Coste de transacción - Freedom24 (0.1% por defecto)
+TRANSACTION_COST_PCT = float(os.getenv("PAPER_TRADING_COMMISSION_PERCENT", "0.001"))  # 0.1%
 
 # Cuánto tiempo se considera "fresco" un análisis cacheado
 FUNDAMENTAL_CACHE_DAYS = 7
