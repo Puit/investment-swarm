@@ -219,28 +219,17 @@ def analyze_stock_new_flow(ticker: str) -> dict:
             sentiment_agent = create_sentiment_agent()
             
             task = Task(
-                description=f"""Analiza el sentimiento de mercado para {ticker}:
-                - Noticias recientes (últimos 7 días)
+                description=f"""Analiza el sentimiento de mercado para {ticker}.
+
+                PASO 1 — Llama a la herramienta news_scraper con ticker="{ticker}" para
+                obtener noticias reales de las últimas 72h antes de hacer cualquier análisis.
+
+                PASO 2 — Con los titulares obtenidos, evalúa:
                 - Red flags: Lawsuits, fraud, CEO changes, bankruptcy rumors
                 - Catalizadores positivos: Producto nuevo, earnings beat, adquisición
                 - Regulación: Cambios a favor/en contra
                 - Competencia: Nuevos competidores, pérdida de market share
-                
-                Red flags que bajan sentimiento:
-                - Lawsuit against company
-                - Accounting fraud or SEC investigation
-                - CEO/CFO departure
-                - Product recall or safety issues
-                - Major customer loss
-                
-                Catalizadores positivos:
-                - Producto/servicio nuevo
-                - Earnings beat
-                - Fusión/adquisición estratégica
-                - Nuevo contrato importante
-                - Cambio regulatorio a favor
-                - Buyback de acciones
-                
+
                 Responde en JSON:
                 {{
                     "sentimiento": "POSITIVO/NEUTRO/NEGATIVO",
@@ -249,7 +238,7 @@ def analyze_stock_new_flow(ticker: str) -> dict:
                     "catalizadores_negativos": [],
                     "red_flags": [],
                     "noticias_clave": ["..."],
-                    "resumen": "..."
+                    "resumen": "análisis basado en noticias reales obtenidas"
                 }}
                 """,
                 agent=sentiment_agent,

@@ -580,6 +580,19 @@ with tab4:
 
         st.divider()
 
+        # ── Botón Backtest Completo ──────────────────────────────────────
+        btn_full_report = st.button(
+            "📊 EJECUTAR BACKTEST COMPLETO",
+            width="stretch",
+            key="btn_full_report",
+            help=(
+                "Ejecuta todos los periodos (MAX 2020→2026 + años individuales) "
+                "para 6 categorías de stocks y genera un informe XLSX descargable."
+            ),
+        )
+
+        st.divider()
+
         # Botones de acción
         col_btn_execute, col_btn_clear = st.columns([0.7, 0.3])
 
@@ -633,6 +646,89 @@ with tab4:
                     st.session_state.confirm_clear_cache = False
                     st.rerun()
 
+        # ── Manejador Backtest Completo ──────────────────────────────────
+        if btn_full_report:
+            from trading.full_backtest_report import run_full_report, generate_xlsx, CATEGORIES, PERIODS
+
+            st.markdown("---")
+            st.markdown("## 📊 BACKTEST COMPLETO — Todas las categorías")
+            st.info(
+                f"Ejecutando **{len(PERIODS)} periodos × {len(CATEGORIES)} categorías** "
+                f"con capital **${initial_capital:,.0f}** y comisión **{cost_input:.2f}%**. "
+                "Esto puede tardar varios minutos…"
+            )
+
+            progress_bar  = st.progress(0, text="Iniciando…")
+            status_text   = st.empty()
+            total_runs    = len(PERIODS) * len(CATEGORIES)
+            run_counter   = [0]
+
+            def _progress_cb(msg: str):
+                run_counter[0] += 1
+                pct = min(int(run_counter[0] / total_runs * 100), 99)
+                progress_bar.progress(pct, text=msg)
+                status_text.caption(msg)
+
+            with st.spinner("Descargando datos y ejecutando backtests…"):
+                all_results = run_full_report(
+                    capital=initial_capital,
+                    cost_pct=transaction_cost_pct,
+                    progress_callback=_progress_cb,
+                )
+
+            progress_bar.progress(100, text="¡Completado!")
+            status_text.empty()
+            st.success("✅ Backtest completo finalizado. Generando XLSX…")
+
+            xlsx_bytes = generate_xlsx(all_results, capital=initial_capital, cost_pct=transaction_cost_pct)
+
+            from datetime import datetime as _dt
+            filename = f"backtest_completo_{_dt.now().strftime('%Y%m%d_%H%M')}.xlsx"
+
+            st.download_button(
+                label="⬇️ Descargar Informe XLSX",
+                data=xlsx_bytes,
+                file_name=filename,
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+
+            # Vista previa por periodo
+            st.markdown("### Vista previa de resultados")
+            for period in PERIODS:
+                pname   = period["name"]
+                p_res   = all_results.get(pname, {})
+                preview = []
+                for cat, meta in CATEGORIES.items():
+                    m = p_res.get(cat, {})
+                    if "error" not in m:
+                        preview.append({
+                            "Categoría":   cat,
+                            "Tickers":     ", ".join(meta["tickers"]),
+                            "Capital final": f"${m['capital_final']:,.2f}",
+                            "Retorno %":   f"{m['return_pct']:+.2f}%",
+                            "Max DD":      f"{m['max_dd']:.1f}%",
+                            "Sharpe":      f"{m['sharpe']:.2f}",
+                            "Compras":     m["buys"],
+                            "Ventas":      m["sells"],
+                            "Win Rate":    f"{m['win_rate']:.1f}%",
+                            "Bot":         f"{m['bot_pct']:+.2f}%",
+                            "B&H":         f"{m['bnh_pct']:+.2f}%",
+                            "SPY":         f"{m['spy_pct']:+.2f}%",
+                        })
+                if preview:
+                    label = (
+                        f"**{pname}** — "
+                        f"{period['start'].strftime('%d/%m/%Y')} → "
+                        f"{period['end'].strftime('%d/%m/%Y')}"
+                    )
+                    with st.expander(label, expanded=(pname == "MAX")):
+                        st.dataframe(
+                            pd.DataFrame(preview),
+                            use_container_width=True,
+                            hide_index=True,
+                        )
+
+        # ── Manejador Simulación Normal ───────────────────────────────────
         if btn_execute:
             if not tickers_to_use and not use_predefined:
                 st.error("❌ Ingresa tickers o selecciona 'usar predefinidos'")

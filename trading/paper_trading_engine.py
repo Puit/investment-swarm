@@ -543,13 +543,15 @@ class PaperTradingEngine:
 
     def _build_sentiment_task(self, agent, ticker: str, strict: bool = False) -> Task:
         if not strict:
-            description = f"""Analiza el sentimiento de mercado actual sobre {ticker}
-            usando las noticias y fuentes disponibles (últimos 3-5 días).
+            description = f"""Analiza el sentimiento de mercado actual sobre {ticker}.
 
-            Evalúa:
+            PASO 1 — Llama a la herramienta news_scraper con ticker="{ticker}" para obtener
+            noticias reales de las últimas 72h antes de hacer cualquier análisis.
+
+            PASO 2 — Con los titulares obtenidos, evalúa:
             - Tono general de las noticias recientes (positivo/negativo/neutro)
-            - Catalizadores positivos relevantes (resultados, productos, partnerships)
-            - Catalizadores negativos o riesgos (demandas, bajadas de rating, escándalos)
+            - Catalizadores positivos (resultados, productos, partnerships, upgrades)
+            - Catalizadores negativos (demandas, bajadas de rating, escándalos, CEO changes)
             - Red flags críticas que un inversor debería conocer
 
             Responde EXCLUSIVAMENTE con un objeto JSON:
@@ -560,13 +562,12 @@ class PaperTradingEngine:
                 "catalizadores_negativos": ["..."],
                 "red_flags": ["..."],
                 "noticias_clave": ["..."],
-                "resumen": "resumen de 2-4 frases"
+                "resumen": "resumen de 2-4 frases basado en noticias reales"
             }}
             """
         else:
-            description = f"""Responde con UNA SOLA LÍNEA, SOLO este JSON:
+            description = f"""Llama a news_scraper con ticker="{ticker}" y responde con UNA SOLA LÍNEA, SOLO este JSON:
             {{"sentimiento": "NEUTRO", "confianza": <0-100>, "catalizadores_positivos": [], "catalizadores_negativos": [], "red_flags": [], "noticias_clave": [], "resumen": "breve"}}
-            Análisis de sentimiento de mercado sobre {ticker}, basado en noticias recientes.
             """
 
         return Task(description=description, agent=agent, expected_output="Un único objeto JSON")
