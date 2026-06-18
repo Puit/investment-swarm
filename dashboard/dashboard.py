@@ -427,6 +427,116 @@ with tab3:
 
                         with st.expander("📝 Análisis"):
                             st.write(tech_data.get("summary", "Sin información"))
+
+            # ── PANEL 4: RESUMEN Y RECOMENDACIÓN ──────────────────────────
+            st.divider()
+            st.markdown(f"### 🎯 Resumen y Recomendación — {selected_ticker}")
+
+            fund_d = ticker_data.get("fundamental", {}).get("data", {})
+            sent_d = ticker_data.get("sentiment",  {}).get("data", {})
+            tech_d = ticker_data.get("technical",  {}).get("data", {})
+
+            # Normaliza claves (inglés o español según origen)
+            f_score = float(fund_d.get("score", 5)) / 10.0
+            f_conf  = float(fund_d.get("confidence", 50)) / 100.0
+
+            _sig_map = {"ALCISTA": 0.8, "BUY": 0.8, "LATERAL": 0.5,
+                        "HOLD": 0.5, "BAJISTA": 0.2, "SELL": 0.2}
+            t_signal = tech_d.get("señal", tech_d.get("signal", "LATERAL"))
+            t_score  = _sig_map.get(t_signal, 0.5)
+            t_conf   = float(tech_d.get("confianza", tech_d.get("confidence", 50))) / 100.0
+
+            _sent_map = {"POSITIVO": 0.8, "NEUTRO": 0.5, "NEGATIVO": 0.2}
+            s_value  = sent_d.get("sentimiento", sent_d.get("sentiment", "NEUTRO"))
+            s_score  = _sent_map.get(s_value, 0.5)
+            s_conf   = float(sent_d.get("confianza", sent_d.get("confidence", 50))) / 100.0
+
+            combined = f_score * 0.40 + t_score * 0.35 + s_score * 0.25
+            avg_conf = (f_conf + t_conf + s_conf) / 3
+
+            # Conviction + recomendación (mismos umbrales que InvestmentDecisionEngine)
+            if combined >= 0.74 and avg_conf >= 0.62:
+                conviction, final_rec = "VERY_HIGH", "BUY"
+            elif combined >= 0.63 and avg_conf >= 0.52:
+                conviction, final_rec = "HIGH", "BUY"
+            elif combined >= 0.53 and avg_conf >= 0.44:
+                conviction, final_rec = "MEDIUM", "HOLD"
+            else:
+                conviction, final_rec = "LOW", "AVOID"
+
+            # El fundamental puede forzar SELL/AVOID independientemente
+            if fund_d.get("recommendation") in ("SELL", "AVOID"):
+                final_rec = fund_d["recommendation"]
+                conviction = "LOW"
+
+            # Red flags de las 3 fuentes
+            all_red_flags = list(fund_d.get("red_flags", []))
+            all_red_flags += list(sent_d.get("red_flags", []))
+            if float(tech_d.get("confianza", tech_d.get("confidence", 50))) < 40:
+                all_red_flags.append("Señal técnica débil (confianza baja)")
+            all_red_flags = all_red_flags[:5]
+
+            # Paleta de colores por recomendación
+            _bg   = {"BUY": "#1a472a", "HOLD": "#3d3000", "SELL": "#5c1010", "AVOID": "#5c1010"}
+            _tc   = {"BUY": "#4caf50", "HOLD": "#ffc107", "SELL": "#f44336", "AVOID": "#f44336"}
+            _icon = {"BUY": "🟢", "HOLD": "🟡", "SELL": "🔴", "AVOID": "🔴"}
+            _conv_label = {"VERY_HIGH": "Muy Alta ⬆️", "HIGH": "Alta ↑",
+                           "MEDIUM": "Media →",       "LOW": "Baja ↓"}
+
+            sum_c1, sum_c2, sum_c3 = st.columns([1, 1, 2])
+
+            with sum_c1:
+                st.markdown(
+                    f"""<div style="background:{_bg.get(final_rec,'#333')};
+                        border-radius:14px; padding:28px 16px; text-align:center;
+                        border:1px solid {_tc.get(final_rec,'#888')}40">
+                      <div style="font-size:2.6rem; font-weight:900;
+                                  color:{_tc.get(final_rec,'#ccc')};
+                                  letter-spacing:2px">
+                        {_icon.get(final_rec,'')} {final_rec}
+                      </div>
+                      <div style="font-size:0.85rem; color:#aaa; margin-top:8px">
+                        Recomendación final
+                      </div>
+                    </div>""",
+                    unsafe_allow_html=True,
+                )
+
+            with sum_c2:
+                st.metric("Score combinado", f"{combined:.0%}")
+                st.progress(float(combined))
+                st.markdown(f"**Convicción:** {_conv_label.get(conviction, conviction)}")
+                st.markdown(f"**Confianza media:** {avg_conf:.0%}")
+
+            with sum_c3:
+                st.markdown("**Desglose por análisis** *(peso en el score)*")
+                st.markdown(f"📊 Fundamental &nbsp;&nbsp;`{f_score:.0%}` &nbsp;*(40%)*")
+                st.progress(float(f_score))
+                st.markdown(f"📈 Técnico &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`{t_score:.0%}` &nbsp;*(35%)*")
+                st.progress(float(t_score))
+                st.markdown(f"📰 Sentimiento &nbsp;`{s_score:.0%}` &nbsp;*(25%)*")
+                st.progress(float(s_score))
+
+            if all_red_flags:
+                st.warning("⚠️ **Red Flags:**  " + "  •  ".join(all_red_flags))
+
+            # Resúmenes de texto
+            summaries = []
+            if fund_d.get("summary"):
+                summaries.append(("📊 Fundamental", fund_d["summary"]))
+            sent_summary = sent_d.get("summary") or sent_d.get("resumen")
+            if sent_summary:
+                summaries.append(("📰 Sentimiento", sent_summary))
+            if tech_d.get("summary"):
+                summaries.append(("📈 Técnico", tech_d["summary"]))
+
+            if summaries:
+                with st.expander("📋 Ver resúmenes de los análisis"):
+                    for label, text in summaries:
+                        st.markdown(f"**{label}:**")
+                        st.write(text)
+                        st.markdown("")
+
     else:
         st.info("No hay análisis aún. Realiza algunos análisis para verlos aquí.")
 
