@@ -31,11 +31,7 @@ from agents.technical_agent import create_technical_agent
 from crewai import Task, Crew, Process
 import re
 
-try:
-    from brokers.freedom24_broker import Freedom24Broker
-    LIVE_BROKER_AVAILABLE = True
-except:
-    LIVE_BROKER_AVAILABLE = False
+from brokers.trading212_broker import Trading212Broker
 
 st.set_page_config(page_title="Investment Swarm", page_icon="📈", layout="wide")
 
@@ -46,16 +42,31 @@ st.set_page_config(page_title="Investment Swarm", page_icon="📈", layout="wide
 if "paper_engine" not in st.session_state:
     st.session_state.paper_engine = PaperTradingEngine(initial_capital=5000.0)
 
-if "live_broker" not in st.session_state and LIVE_BROKER_AVAILABLE:
-    st.session_state.live_broker = Freedom24Broker()
-    st.session_state.live_connected = st.session_state.live_broker.connect()
-else:
-    st.session_state.live_broker = None
-    st.session_state.live_connected = False
+# T212 Paper Trading (cuenta demo)
+if "t212_paper_broker" not in st.session_state:
+    _b = Trading212Broker(account_type="paper")
+    _ok = _b.connect() if _b.api_secret else False
+    st.session_state.t212_paper_broker    = _b
+    st.session_state.t212_paper_connected = _ok
 
-paper_engine = st.session_state.paper_engine
-live_broker = st.session_state.live_broker
-live_connected = st.session_state.live_connected
+# T212 Live Trading (cuenta real)
+if "t212_live_broker" not in st.session_state:
+    _b = Trading212Broker(account_type="live")
+    _ok = _b.connect() if _b.api_secret else False
+    st.session_state.t212_live_broker    = _b
+    st.session_state.t212_live_connected = _ok
+
+paper_engine         = st.session_state.paper_engine
+t212_paper_broker    = st.session_state.t212_paper_broker
+t212_paper_connected = st.session_state.t212_paper_connected
+t212_live_broker     = st.session_state.t212_live_broker
+t212_live_connected  = st.session_state.t212_live_connected
+
+# Compat aliases usados en código heredado
+t212_broker    = t212_paper_broker
+t212_connected = t212_paper_connected
+live_broker    = t212_live_broker
+live_connected = t212_live_connected
 
 # ═══════════════════════════════════════════════════════════════
 # HELPERS
@@ -137,15 +148,20 @@ st.markdown("# 📈 Investment Swarm Dashboard")
 
 col1, col2, col3 = st.columns(3)
 with col1:
-    paper_portfolio = paper_engine.get_portfolio_summary()
-    st.metric("📚 Paper Trading", fmt_money(paper_portfolio["total_value"]))
+    if t212_paper_connected:
+        _t212p = t212_paper_broker.get_portfolio_summary()
+        st.metric("🟡 T212 Paper (Demo)", fmt_money(_t212p.get("total_value", 0)))
+    else:
+        _pe_sum = paper_engine.get_portfolio_summary()
+        st.metric("📚 Paper Trading (local)", fmt_money(_pe_sum["total_value"]),
+                  delta=f"{_pe_sum['return_pct']:+.2f}%")
 
 with col2:
-    if live_connected:
-        live_portfolio = live_broker.get_portfolio_summary()
-        st.metric("🔴 Live Trading", fmt_money(live_portfolio["total_value"]))
+    if t212_live_connected:
+        _t212l = t212_live_broker.get_portfolio_summary()
+        st.metric("🔴 T212 Live", fmt_money(_t212l.get("total_value", 0)))
     else:
-        st.metric("🔴 Live Trading", "No disponible")
+        st.metric("📈 T212 Live", "Sin conectar")
 
 st.divider()
 
@@ -155,7 +171,7 @@ st.divider()
 
 tab1, tab2, tab3, tab4 = st.tabs([
     "💰 Paper Trading",
-    "🔴 Live Trading",
+    "📈 Trading 212",
     "📊 Análisis",
     "🧪 Tests & Simulation"
 ])
@@ -165,64 +181,561 @@ tab1, tab2, tab3, tab4 = st.tabs([
 # ─────────────────────────────────────────────────────────────
 
 with tab1:
-    st.header("📚 Paper Trading")
+    st.header("💰 Paper Trading")
 
-    col1, col2 = st.columns(2)
-    with col1:
-        st.subheader("Cartera")
-        portfolio = paper_engine.get_portfolio_summary()
-        st.metric("Total", fmt_money(portfolio["total_value"]))
-        st.metric("Cash", fmt_money(portfolio["cash"]))
+    # ── helpers locales ────────────────────────────────────────
+    def _regime_badge(r: str) -> str:
+        return {"BULLISH": "🟢 BULLISH", "NEUTRAL": "🟡 NEUTRAL",
+                "BEARISH": "🔴 BEARISH", "BEAR_RALLY": "🟠 BEAR_RALLY"}.get(r, r)
 
-    with col2:
-        st.subheader("Posiciones")
+    def _conv_badge(c: str) -> str:
+        return {"VERY_HIGH": "⬆️ Muy Alta", "HIGH": "↑ Alta",
+                "MEDIUM": "→ Media", "LOW": "↓ Baja", "MANUAL": "✋ Manual",
+                "HEDGE": "🛡️ Hedge"}.get(c, c or "—")
+
+    # ── Indicador de fuente de datos ───────────────────────────
+    if t212_paper_connected:
+        st.success("✓ **Trading 212 Demo conectado** — datos y operaciones en tiempo real sobre tu cuenta demo")
+    else:
+        _no_creds = not t212_paper_broker.api_secret
+        _conn_col, _btn_col = st.columns([3, 1])
+        with _conn_col:
+            if _no_creds:
+                st.info("ℹ️ T212 Demo no configurado — usando simulación local. "
+                        "Añade `T212_API_SECRET_PAPER_TRADING` (o `T212_API_SECRET`) al `.env`.")
+            else:
+                st.error("❌ T212 Demo: credenciales encontradas pero la conexión falló. "
+                         "Verifica que la API key sea la de la cuenta demo.")
+        with _btn_col:
+            if not _no_creds and st.button("🔄 Reconectar", key="paper_reconnect"):
+                t212_paper_broker.connected = False
+                _ok = t212_paper_broker.connect()
+                st.session_state.t212_paper_connected = _ok
+                st.rerun()
+
+    # ── 1. KPIs ────────────────────────────────────────────────
+    regime = paper_engine.get_regime()
+    paused = paper_engine.state.get("trading_paused", False)
+
+    if t212_paper_connected:
+        _t212p_sum = t212_paper_broker.get_portfolio_summary()
+        total    = _t212p_sum.get("total_value", 0.0)
+        cash     = _t212p_sum.get("cash", 0.0)
+        invested = _t212p_sum.get("positions_value", 0.0)
+        ret_pct  = _t212p_sum.get("return_pct", 0.0)
+        initial  = paper_engine.get_portfolio_summary().get("initial_capital", 5000.0)
+    else:
         portfolio = paper_engine.get_portfolio_summary()
-        positions = portfolio.get("positions", [])
-        if positions:
-            df = pd.DataFrame([
-                {
-                    "Ticker": p["ticker"],
-                    "Qty": p["qty"],
-                    "Entrada": f"${p['entry_price']:.2f}",
-                    "Actual": f"${p['current_price']:.2f}" if p['current_price'] else "N/A",
-                    "PnL": f"${p['pnl']:.2f}",
-                    "PnL%": f"{p['pnl_pct']:.2f}%"
-                }
-                for p in positions
-            ])
-            st.dataframe(df, use_container_width=True, hide_index=True)
+        total    = portfolio["total_value"]
+        cash     = portfolio["cash"]
+        invested = total - cash
+        ret_pct  = portfolio["return_pct"]
+        initial  = portfolio["initial_capital"]
+
+    k1, k2, k3, k4, k5 = st.columns(5)
+    k1.metric("💼 Total", fmt_money(total),
+              delta=f"{ret_pct:+.2f}%")
+    k2.metric("💵 Cash libre",  fmt_money(cash))
+    k3.metric("📊 Invertido",   fmt_money(invested))
+    k4.metric("🌍 Régimen",     _regime_badge(regime))
+    k5.metric("🛡️ Circuit",     "⏸️ PAUSADO" if paused else "✅ Activo")
+
+    st.divider()
+
+    # ── 2. WATCHLIST + ACCIONES BOT ───────────────────────────
+    wl_col, bot_col = st.columns([1, 1], gap="large")
+
+    with wl_col:
+        st.subheader("📋 Watchlist")
+        watchlist = paper_engine.state.get("watchlist", [])
+
+        # Mostrar tickers actuales con botón de quitar
+        if watchlist:
+            cols_wl = st.columns(min(len(watchlist), 5))
+            for i, t in enumerate(watchlist):
+                with cols_wl[i % 5]:
+                    if st.button(f"❌ {t}", key=f"rm_{t}", use_container_width=True,
+                                 help=f"Quitar {t} de la watchlist"):
+                        paper_engine.remove_ticker(t)
+                        st.rerun()
         else:
-            st.info("Sin posiciones")
+            st.info("Watchlist vacía — añade tickers abajo")
+
+        # Añadir ticker
+        add_c1, add_c2 = st.columns([3, 1])
+        with add_c1:
+            new_ticker = st.text_input("Añadir ticker", placeholder="Ej: AAPL",
+                                       label_visibility="collapsed", key="wl_add_input").upper().strip()
+        with add_c2:
+            if st.button("➕ Añadir", key="wl_add_btn", use_container_width=True):
+                if new_ticker:
+                    paper_engine.add_ticker(new_ticker)
+                    st.success(f"✓ {new_ticker} añadido")
+                    st.rerun()
+                else:
+                    st.warning("Escribe un ticker")
+
+    with bot_col:
+        st.subheader("🤖 Acciones del Bot")
+
+        def _execute_scan_on_t212(scan_result: dict) -> None:
+            """Si T212 paper está conectado, replica las decisiones del bot en T212."""
+            if not t212_paper_connected:
+                return
+            for b in scan_result.get("buys", []):
+                res = t212_paper_broker.buy(b["ticker"], b["quantity"])
+                if res.get("success"):
+                    st.success(f"✅ T212 Demo: Comprado {b['quantity']} {b['ticker']}"
+                               f" | Order {res.get('order_id','?')}")
+                else:
+                    st.warning(f"⚠️ T212 Demo (compra fallida): {res.get('message','?')}")
+            for s in scan_result.get("sells", []):
+                res = t212_paper_broker.sell(s["ticker"], s["quantity"])
+                if res.get("success"):
+                    st.success(f"✅ T212 Demo: Vendido {s['quantity']} {s['ticker']}"
+                               f" | Order {res.get('order_id','?')}")
+                else:
+                    st.warning(f"⚠️ T212 Demo (venta fallida): {res.get('message','?')}")
+
+        b1, b2 = st.columns(2)
+        with b1:
+            if st.button("🔍 Scan Automático", use_container_width=True, key="btn_scan",
+                         help="El bot analiza la watchlist y compra solo si ve señal clara"):
+                with st.spinner("Escaneando..."):
+                    result = paper_engine.scan(mode="auto")
+                buys   = result.get("buys", [])
+                sells  = result.get("sells", [])
+                skipped = result.get("skipped", [])
+                notes  = result.get("notes", [])
+                if buys:
+                    for b in buys:
+                        st.success(f"✅ Bot decide: {b['quantity']} {b['ticker']} @ ${b['price']:.2f}"
+                                   f"  (conv: {b.get('conviction','?')})")
+                if sells:
+                    for s in sells:
+                        st.warning(f"🔔 Bot decide vender: {s['quantity']} {s['ticker']}"
+                                   f"  — {s.get('reason','?')}")
+                if notes:
+                    for n in notes: st.info(n)
+                if not buys and not sells:
+                    st.info(f"Sin operaciones. Saltados: {len(skipped)}")
+                _execute_scan_on_t212(result)
+                st.rerun()
+
+        with b2:
+            if st.button("💰 Invertir Ahora", use_container_width=True, key="btn_invest",
+                         help="Fuerza la entrada en todos los tickers de la watchlist sin señal mínima"):
+                with st.spinner("Invirtiendo..."):
+                    result = paper_engine.scan(mode="invest_now")
+                buys = result.get("buys", [])
+                if buys:
+                    for b in buys:
+                        st.success(f"✅ Bot decide: {b['quantity']} {b['ticker']} @ ${b['price']:.2f}")
+                else:
+                    notes = result.get("notes", [])
+                    st.info(notes[0] if notes else "Sin tickers disponibles")
+                _execute_scan_on_t212(result)
+                st.rerun()
+
+        # Cooldowns activos
+        cooldowns = paper_engine.state.get("stop_loss_cooldown", {})
+        active_cd = {t: d for t, d in cooldowns.items()
+                     if datetime.fromisoformat(d) > datetime.now()}
+        if active_cd:
+            st.markdown("**⏳ En cooldown:**")
+            for t, until in active_cd.items():
+                days_left = (datetime.fromisoformat(until) - datetime.now()).days
+                st.caption(f"  {t} — {days_left}d restantes")
+
+    st.divider()
+
+    # ── 3. POSICIONES ABIERTAS ────────────────────────────────
+    st.subheader("📌 Posiciones Abiertas")
+
+    if t212_paper_connected:
+        positions = t212_paper_broker.get_positions()
+        if positions:
+            for pos in positions:
+                pnl_icon = "🟢" if pos["pnl_pct"] >= 0 else "🔴"
+                with st.expander(
+                    f"{pnl_icon} **{pos['ticker']}** — "
+                    f"{pos['qty']:.4g} acc. | entrada ${pos['entry_price']:.2f} | "
+                    f"actual ${pos['current_price']:.2f} | "
+                    f"PnL {pos['pnl_pct']:+.2f}%",
+                    expanded=False,
+                ):
+                    pc1, pc2, pc3, pc4 = st.columns(4)
+                    pc1.metric("Cantidad",       f"{pos['qty']:.4g}")
+                    pc2.metric("Precio entrada", f"${pos['entry_price']:.2f}")
+                    pc3.metric("Precio actual",  f"${pos['current_price']:.2f}")
+                    pc4.metric("PnL",
+                               fmt_money(pos["pnl"]),
+                               delta=f"{pos['pnl_pct']:+.2f}%")
+                    st.caption(f"Valor total: {fmt_money(pos['value'])} | "
+                               f"T212 ticker: `{pos.get('t212_ticker', pos['ticker'])}`")
+
+                    sell_key = f"t212_sell_{pos['ticker']}"
+                    if st.button(f"🔴 Vender {pos['qty']:.4g} {pos['ticker']} en T212 Demo",
+                                 key=sell_key, type="secondary"):
+                        with st.spinner("Enviando orden de venta..."):
+                            r = t212_paper_broker.sell(pos["ticker"], pos["qty"])
+                        if r.get("success"):
+                            st.success(r["message"])
+                        else:
+                            st.error(r.get("message", "Error desconocido"))
+                        st.rerun()
+        else:
+            st.info("No hay posiciones abiertas en T212 Demo.")
+    else:
+        # Fuente local: paper_engine
+        _local_portfolio = paper_engine.get_portfolio_summary()
+        positions = _local_portfolio.get("positions", [])
+        if positions:
+            for pos in positions:
+                is_hedge = pos.get("is_hedge", False)
+                pnl_icon = "🟢" if pos["pnl_pct"] >= 0 else "🔴"
+                ticker_label = f"🛡️ {pos['ticker']}" if is_hedge else pos["ticker"]
+
+                with st.expander(
+                    f"{pnl_icon} **{ticker_label}** — "
+                    f"{pos['qty']} acc. | entrada ${pos['entry_price']:.2f} | "
+                    f"actual ${(pos['current_price'] or 0):.2f} | "
+                    f"PnL {pos['pnl_pct']:+.2f}%",
+                    expanded=False,
+                ):
+                    pc1, pc2, pc3, pc4 = st.columns(4)
+                    pc1.metric("Cantidad",    pos["qty"])
+                    pc2.metric("Precio entrada", f"${pos['entry_price']:.2f}")
+                    pc3.metric("Precio actual",
+                               f"${pos['current_price']:.2f}" if pos["current_price"] else "N/A")
+                    pc4.metric("PnL",
+                               f"${pos['pnl']:.2f}",
+                               delta=f"{pos['pnl_pct']:+.2f}%")
+
+                    st.caption(
+                        f"Convicción: {_conv_badge(pos.get('conviction'))} | "
+                        f"Régimen entrada: {pos.get('entry_regime','?')} | "
+                        f"Fecha: {str(pos.get('entry_date','?'))[:10]}"
+                    )
+
+                    sell_key = f"sell_{pos['ticker']}_{pos['entry_date']}"
+                    if st.button(f"🔴 Vender {pos['qty']} {pos['ticker']} (precio actual)",
+                                 key=sell_key, type="secondary"):
+                        price_now = paper_engine.get_current_price(pos["ticker"])
+                        if price_now:
+                            r = paper_engine.execute_operation_manual(
+                                pos["ticker"], "SELL", pos["qty"], price_now,
+                                note="Venta forzada desde dashboard",
+                            )
+                            if r["success"]:
+                                st.success(r["message"])
+                            else:
+                                st.error(r["message"])
+                            st.rerun()
+                        else:
+                            st.error("No se pudo obtener precio actual")
+        else:
+            st.info("No hay posiciones abiertas.")
+
+    st.divider()
+
+    # ── 4. OPERACIÓN MANUAL ────────────────────────────────────
+    st.subheader("✍️ Operación Manual")
+    if t212_paper_connected:
+        st.caption("Las órdenes se enviarán a tu cuenta demo de Trading 212.")
+
+    op_type = st.radio("Acción:", ["COMPRAR", "VENDER"], horizontal=True, key="op_type")
+
+    mc1, mc2, mc3, mc4 = st.columns([2, 1, 1, 1])
+    with mc1:
+        op_ticker = st.text_input("Ticker", placeholder="Ej: MSFT",
+                                  key="op_ticker").upper().strip()
+        if op_ticker and t212_paper_connected:
+            _resolved = t212_paper_broker.resolve_ticker(op_ticker)
+            if _resolved:
+                st.caption(f"T212: `{_resolved}`")
+            else:
+                _matches = t212_paper_broker.search_ticker(op_ticker)
+                if _matches:
+                    st.caption("Posibles: " + ", ".join(f"`{m['symbol']}`" for m in _matches[:3]))
+                else:
+                    st.caption(f"⚠️ '{op_ticker}' no encontrado en catálogo T212")
+    with mc2:
+        op_qty = st.number_input("Cantidad", min_value=0.01, value=1.0,
+                                 step=0.01, format="%.4f", key="op_qty")
+    with mc3:
+        default_price = 0.0
+        if op_ticker:
+            try:
+                p = paper_engine.get_current_price(op_ticker)
+                default_price = float(p) if p else 0.0
+            except Exception:
+                pass
+        op_price = st.number_input("Precio ref. ($)", min_value=0.0, value=default_price,
+                                    step=0.01, format="%.2f", key="op_price",
+                                    help="Solo referencial — T212 usa precio de mercado real")
+    with mc4:
+        st.markdown("&nbsp;", unsafe_allow_html=True)
+        confirm_key = f"confirm_op_{op_type}_{op_ticker}"
+        execute_btn = st.button(
+            f"{'🟢 COMPRAR' if op_type == 'COMPRAR' else '🔴 VENDER'}",
+            key=confirm_key, use_container_width=True, type="primary",
+        )
+
+    if execute_btn:
+        if not op_ticker:
+            st.error("Escribe un ticker")
+        else:
+            action = "BUY" if op_type == "COMPRAR" else "SELL"
+            if t212_paper_connected:
+                with st.spinner("Enviando orden a T212 Demo..."):
+                    if action == "BUY":
+                        result = t212_paper_broker.buy(op_ticker, op_qty)
+                    else:
+                        result = t212_paper_broker.sell(op_ticker, op_qty)
+                if result.get("success"):
+                    st.success(f"{result['message']} | Order ID: {result.get('order_id','?')}")
+                else:
+                    st.error(result.get("message", "Error desconocido"))
+            else:
+                if op_price <= 0:
+                    st.error("Precio debe ser > 0")
+                else:
+                    cost_preview = op_qty * op_price
+                    st.info(f"Ejecutando {action} de {op_qty} {op_ticker} @ ${op_price:.2f}"
+                            f" (total ≈ ${cost_preview:,.2f})")
+                    result = paper_engine.execute_operation_manual(
+                        op_ticker, action, int(op_qty), op_price,
+                        note="Operación manual desde dashboard",
+                    )
+                    if result["success"]:
+                        bot_op = result.get("trade", {}).get("bot_opinion", "?")
+                        st.success(f"{result['message']} | Bot opinion: {bot_op}")
+                    else:
+                        st.error(result["message"])
+            st.rerun()
+
+    st.divider()
+
+    # ── 5. HISTORIAL DE TRADES ─────────────────────────────────
+    st.subheader("📜 Historial de Operaciones")
+
+    if t212_paper_connected:
+        t212_history = t212_paper_broker.get_order_history(limit=50)
+        if t212_history:
+            rows_th = []
+            for o in t212_history:
+                side = o.get("type", o.get("side", "?"))
+                t212_tk = o.get("ticker", "?")
+                symbol = t212_paper_broker._t212_to_symbol(t212_tk) or t212_tk
+                filled_qty   = o.get("filledQuantity",  o.get("quantity", "?"))
+                filled_price = o.get("filledPrice",     o.get("price", None))
+                ts = o.get("dateCreated", o.get("dateModified", ""))
+                rows_th.append({
+                    "Fecha":   str(ts)[:16],
+                    "Ticker":  symbol,
+                    "Acción":  f"{'🟢 BUY' if 'BUY' in str(side).upper() else '🔴 SELL'}",
+                    "Cantidad": filled_qty,
+                    "Precio":  f"${float(filled_price):.2f}" if filled_price else "—",
+                    "Estado":  o.get("status", "?"),
+                })
+            st.dataframe(pd.DataFrame(rows_th), use_container_width=True, hide_index=True)
+        else:
+            st.info("Sin historial de órdenes en T212 Demo.")
+    else:
+        trade_history = paper_engine.state.get("trade_history", [])
+        if trade_history:
+            trades_reversed = list(reversed(trade_history[-50:]))
+            rows_th = []
+            for t in trades_reversed:
+                action = t.get("action", "?")
+                pnl = t.get("pnl")
+                rows_th.append({
+                    "Fecha":    str(t.get("date",""))[:16],
+                    "Ticker":   t.get("ticker","?"),
+                    "Acción":   f"{'🟢 BUY' if action=='BUY' else '🔴 SELL'}",
+                    "Precio":   f"${t.get('price',0):.2f}",
+                    "Qty":      t.get("quantity","?"),
+                    "Total":    f"${t.get('amount',0):.2f}",
+                    "PnL":      f"${pnl:.2f}" if pnl is not None else "—",
+                    "Razón":    t.get("reason", t.get("conviction", t.get("note","—"))),
+                    "Origen":   t.get("origin", "AUTO"),
+                    "Régimen":  t.get("regime","?"),
+                })
+            st.dataframe(pd.DataFrame(rows_th), use_container_width=True, hide_index=True)
+        else:
+            st.info("Sin operaciones todavía.")
+
+    st.divider()
+
+    # ── 6. CONTROL AVANZADO ────────────────────────────────────
+    with st.expander("⚙️ Control avanzado"):
+        adv1, adv2, adv3 = st.columns(3)
+
+        with adv1:
+            st.markdown("**🔄 Reset portfolio**")
+            st.caption("Borra posiciones e historial. Mantiene análisis guardados.")
+            if st.button("🗑️ Resetear Paper Trading", key="btn_reset", type="secondary"):
+                if st.session_state.get("confirm_reset"):
+                    paper_engine.reset()
+                    st.session_state.confirm_reset = False
+                    st.success("✓ Portfolio reseteado")
+                    st.rerun()
+                else:
+                    st.session_state.confirm_reset = True
+                    st.warning("Pulsa de nuevo para confirmar")
+
+        with adv2:
+            st.markdown("**🛡️ Circuit Breaker**")
+            dd_pct = 0.0
+            peak   = paper_engine.state.get("peak_portfolio_value", total)
+            if peak > 0:
+                dd_pct = (peak - total) / peak * 100
+            st.caption(f"Drawdown actual: {dd_pct:.1f}% (umbral: 15%)")
+            st.caption(f"Pico histórico: {fmt_money(peak)}")
+            if paused:
+                st.warning("⏸️ Trading pausado")
+                if st.button("▶️ Reanudar manualmente", key="btn_resume"):
+                    paper_engine.state["trading_paused"] = False
+                    paper_engine.state["pause_started_at"] = None
+                    paper_engine.state["peak_portfolio_value"] = total
+                    paper_engine.save()
+                    st.success("Trading reanudado")
+                    st.rerun()
+            else:
+                st.success("✅ Trading activo")
+
+        with adv3:
+            st.markdown("**📊 Costes de transacción**")
+            _local_p = paper_engine.get_portfolio_summary()
+            total_costs = _local_p.get("total_transaction_costs", 0.0)
+            cost_pct = (total_costs / initial * 100) if initial > 0 else 0
+            st.metric("Total pagado (local)", fmt_money(total_costs))
+            st.caption(f"{cost_pct:.2f}% del capital inicial")
+            last_scan = _local_p.get("last_scan_at")
+            if last_scan:
+                st.caption(f"Último scan: {str(last_scan)[:16]}")
 
 # ─────────────────────────────────────────────────────────────
 # TAB 2: LIVE TRADING
 # ─────────────────────────────────────────────────────────────
 
 with tab2:
-    st.header("🔴 Live Trading")
-    if live_connected:
-        st.success("✓ Conectado a Freedom24")
-        portfolio = live_broker.get_portfolio_summary()
-        st.metric("Total", fmt_money(portfolio["total_value"]))
+    st.header("📈 Trading 212 — Cuenta Real")
 
-        # Mostrar posiciones
-        positions = portfolio.get("positions", [])
-        if positions:
-            st.subheader("Posiciones")
-            df = pd.DataFrame([
-                {
-                    "Ticker": p["ticker"],
-                    "Qty": p["qty"],
-                    "Entrada": f"${p['entry_price']:.2f}",
-                    "Actual": f"${p['current_price']:.2f}",
-                    "PnL": f"${p['pnl']:.2f}",
-                    "PnL%": f"{p['pnl_pct']:.2f}%"
-                }
-                for p in positions
-            ])
-            st.dataframe(df, use_container_width=True, hide_index=True)
+    if not t212_live_broker.api_secret:
+        st.warning("⚠️ Añade las credenciales de la cuenta real de Trading 212 en el `.env`.")
+        st.code(
+            "T212_API_KEY_ID_LIVE_TRADING=id_visible_en_el_panel_t212_live\n"
+            "T212_API_SECRET_LIVE_TRADING=clave_secreta_de_tu_cuenta_real",
+            language="bash",
+        )
+    elif not t212_live_connected:
+        st.error("❌ No se pudo conectar con Trading 212 Live. Verifica la API key.")
+        if st.button("🔄 Reintentar conexión", key="t212_live_retry"):
+            t212_live_broker.connected = False
+            ok = t212_live_broker.connect()
+            st.session_state.t212_live_connected = ok
+            st.rerun()
     else:
-        st.warning("⚠️ No disponible - Configura Freedom24 en .env (FREEDOM24_API_KEY, etc.)")
+        st.success("✓ Trading 212 Live conectado — 🔴 CUENTA REAL")
+
+        t212_portfolio = t212_live_broker.get_portfolio_summary()
+        free      = t212_portfolio.get("cash", 0.0)
+        invested  = t212_portfolio.get("positions_value", 0.0)
+        total_t   = t212_portfolio.get("total_value", 0.0)
+        ppl       = t212_portfolio.get("unrealized_pnl", 0.0)
+
+        # KPIs
+        tc1, tc2, tc3, tc4 = st.columns(4)
+        tc1.metric("💼 Total cuenta", fmt_money(total_t))
+        tc2.metric("💵 Disponible",   fmt_money(free))
+        tc3.metric("📊 Invertido",    fmt_money(invested))
+        tc4.metric("📈 P&L no realiz.", fmt_money(ppl),
+                   delta=f"{t212_portfolio.get('return_pct', 0):.2f}%")
+
+        st.divider()
+
+        # Posiciones
+        t212_positions = t212_portfolio.get("positions", [])
+        st.subheader(f"📌 Posiciones abiertas ({len(t212_positions)})")
+        if t212_positions:
+            df_pos = pd.DataFrame([
+                {
+                    "Ticker":        p["ticker"],
+                    "Cantidad":      p["qty"],
+                    "Precio medio":  f"${p['entry_price']:.2f}",
+                    "Precio actual": f"${p['current_price']:.2f}",
+                    "Valor":         fmt_money(p["value"]),
+                    "PnL":           fmt_money(p["pnl"]),
+                    "PnL%":          f"{p['pnl_pct']:+.2f}%",
+                }
+                for p in t212_positions
+            ])
+            st.dataframe(df_pos, use_container_width=True, hide_index=True)
+        else:
+            st.info("Sin posiciones abiertas en Trading 212 Live.")
+
+        st.divider()
+
+        # Operación manual T212 Live
+        st.subheader("✍️ Operar en Trading 212 Live")
+        st.caption("⚠️ Las órdenes se ejecutan con DINERO REAL.")
+
+        t2_c1, t2_c2, t2_c3, t2_c4 = st.columns([2, 1, 1, 1])
+        with t2_c1:
+            t212_symbol = st.text_input("Ticker", placeholder="Ej: AAPL",
+                                        key="t212_ticker_input").upper().strip()
+        with t2_c2:
+            t212_qty = st.number_input("Cantidad", min_value=0.01, value=1.0,
+                                       step=0.01, format="%.4f", key="t212_qty")
+        with t2_c3:
+            t212_max_amt = st.number_input("Máx. importe ($)", min_value=0.0, value=0.0,
+                                           step=10.0, format="%.2f", key="t212_max_amt",
+                                           help="0 = sin límite")
+        with t2_c4:
+            t212_side = st.radio("", ["BUY", "SELL"], horizontal=True, key="t212_side")
+
+        # Buscar instrumento
+        if t212_symbol:
+            t212_resolved = t212_live_broker.resolve_ticker(t212_symbol)
+            if t212_resolved:
+                st.caption(f"✓ Instrumento T212: `{t212_resolved}`")
+            else:
+                matches = t212_live_broker.search_ticker(t212_symbol)
+                if matches:
+                    st.caption("Posibles coincidencias: " +
+                               ", ".join(f"`{m['symbol']}`" for m in matches[:5]))
+                else:
+                    st.warning(f"'{t212_symbol}' no encontrado en el catálogo T212 Live")
+
+        if st.button(f"{'🟢 COMPRAR' if t212_side=='BUY' else '🔴 VENDER'} en T212 Live",
+                     key="t212_execute", type="primary"):
+            if not t212_symbol:
+                st.error("Introduce un ticker")
+            else:
+                max_a = float(t212_max_amt) if t212_max_amt > 0 else None
+                with st.spinner("Enviando orden..."):
+                    if t212_side == "BUY":
+                        res = t212_live_broker.buy(t212_symbol, t212_qty, max_amount=max_a)
+                    else:
+                        res = t212_live_broker.sell(t212_symbol, t212_qty)
+                if res.get("success"):
+                    st.success(res["message"] +
+                               f" | Order ID: {res.get('order_id','?')}")
+                else:
+                    st.error(res.get("message", "Error desconocido"))
+
+        st.divider()
+
+        # Historial de órdenes T212 Live
+        with st.expander("📜 Historial de órdenes (últimas 20)"):
+            history = t212_live_broker.get_order_history(limit=20)
+            if history:
+                st.dataframe(pd.DataFrame(history), use_container_width=True,
+                             hide_index=True)
+            else:
+                st.info("Sin historial disponible.")
 
 # ─────────────────────────────────────────────────────────────
 # TAB 3: ANÁLISIS INTEGRADO
